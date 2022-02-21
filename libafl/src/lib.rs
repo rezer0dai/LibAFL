@@ -67,6 +67,8 @@ Welcome to `LibAFL`
 extern crate alloc;
 #[macro_use]
 extern crate static_assertions;
+#[deny(unused_extern_crates)]
+extern crate libbfl;
 #[cfg(feature = "std")]
 pub use ctor::ctor;
 

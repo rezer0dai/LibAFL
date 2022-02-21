@@ -226,6 +226,7 @@ impl CompilerWrapper for ClangWrapper {
         if !self.passes.is_empty() {
             args.push("-fno-experimental-new-pass-manager".into());
         }
+        self.passes.push(LLVMPasses::AFLCoverage);
         for pass in &self.passes {
             args.push("-Xclang".into());
             args.push("-load".into());

@@ -25,8 +25,6 @@
    in ../afl-as.h.
 
  */
-
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -809,7 +807,9 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   }*/
   
-  if (Debug) {
+  if (true){//Debug) {
+
+
 
     if (!inst_blocks)
       fprintf(stderr, "No instrumentation targets found.\n");

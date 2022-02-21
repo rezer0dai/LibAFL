@@ -1,14 +1,20 @@
 //! [`Libfuzzer`](https://www.llvm.org/docs/LibFuzzer.html)-style runtime wrapper for `LibAFL`.
 //! This makes `LibAFL` interoperable with harnesses written for other fuzzers like `Libfuzzer` and [`AFLplusplus`](aflplus.plus).
 //! We will interact with a C++ target, so use external c functionality
-
+/*
 extern "C" {
-    /// int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
-    fn LLVMFuzzerTestOneInput(data: *const u8, size: usize) -> i32;
+    // int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
+    fn LLVMFuzzerTestOneInput(data: *const u8, data: *mut u8, size: usize) -> i32;
 
     // libafl_targets_libfuzzer_init calls LLVMFUzzerInitialize()
     fn libafl_targets_libfuzzer_init(argc: *const i32, argv: *const *const *const u8) -> i32;
 }
+*/
+use bananafzz::{//libafl_targets_libfuzzer_init;//
+    LLVMFuzzerTestOneInput,
+    libafl_targets_libfuzzer_init,
+};
+
 
 /// Calls the (native) libfuzzer initialize function.
 /// Returns the value returned by the init function.
@@ -32,6 +38,6 @@ pub fn libfuzzer_initialize(args: &[String]) -> i32 {
 /// # Safety
 /// Calls the libfuzzer harness. We actually think the target is unsafe and crashes eventually, that's why we do all this fuzzing.
 #[allow(clippy::must_use_candidate)]
-pub fn libfuzzer_test_one_input(buf: &[u8]) -> i32 {
-    unsafe { LLVMFuzzerTestOneInput(buf.as_ptr(), buf.len()) }
+pub fn libfuzzer_test_one_input(poc_mem: *mut u8, buf: &[u8]) -> i32 {
+    unsafe { LLVMFuzzerTestOneInput(poc_mem, buf.as_ptr(), buf.len()) }
 }

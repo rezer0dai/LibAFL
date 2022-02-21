@@ -14,6 +14,15 @@ pub mod gramatron;
 pub use gramatron::*;
 pub mod grimoire;
 pub use grimoire::*;
+#[allow(missing_docs)]
+pub mod bananizer;
+pub use bananizer::*;
+#[allow(missing_docs)]
+pub mod banana;
+pub use banana::*;
+#[allow(missing_docs)]
+pub mod bfl;
+pub use bfl::*;
 
 #[cfg(feature = "nautilus")]
 pub mod nautilus;

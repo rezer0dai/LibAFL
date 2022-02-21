@@ -10,9 +10,9 @@
 //! On `Unix` systems, the [`Launcher`] will use `fork` if the `fork` feature is used for `LibAFL`.
 //! Else, it will start subsequent nodes with the same commandline, and will set special `env` variables accordingly.
 
-#[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
+#[cfg(all(feature = "std", any(windows, not(feature = "fork"), feature = "easydebug")))]
 use crate::bolts::os::startable_self;
-#[cfg(all(unix, feature = "std", feature = "fork"))]
+#[cfg(all(unix, feature = "std", feature = "fork", not(feature = "easydebug")))]
 use crate::bolts::os::{dup2, fork, ForkResult};
 #[cfg(feature = "std")]
 use crate::{
@@ -27,15 +27,15 @@ use crate::{
 use core::fmt::{self, Debug, Formatter};
 #[cfg(feature = "std")]
 use core::marker::PhantomData;
-#[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
+#[cfg(all(feature = "std", any(windows, not(feature = "fork"), feature = "easydebug")))]
 use core_affinity::CoreId;
 #[cfg(feature = "std")]
 use serde::de::DeserializeOwned;
 #[cfg(feature = "std")]
 use std::net::SocketAddr;
-#[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
+#[cfg(all(feature = "std", any(windows, not(feature = "fork"), feature = "easydebug")))]
 use std::process::Stdio;
-#[cfg(all(unix, feature = "std", feature = "fork"))]
+#[cfg(all(unix, feature = "std", feature = "fork", not(feature = "easydebug")))]
 use std::{fs::File, os::unix::io::AsRawFd};
 #[cfg(feature = "std")]
 use typed_builder::TypedBuilder;
@@ -118,7 +118,7 @@ where
     S: DeserializeOwned,
 {
     /// Launch the broker and the clients and fuzz
-    #[cfg(all(unix, feature = "std", feature = "fork"))]
+    #[cfg(all(unix, feature = "std", feature = "fork", not(feature = "easydebug")))]
     #[allow(clippy::similar_names)]
     pub fn launch(&mut self) -> Result<(), Error> {
         if self.run_client.is_none() {
@@ -220,7 +220,7 @@ where
     }
 
     /// Launch the broker and the clients and fuzz
-    #[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
+    #[cfg(all(feature = "std", any(windows, not(feature = "fork"), feature = "easydebug")))]
     #[allow(unused_mut, clippy::match_wild_err_arm)]
     pub fn launch(&mut self) -> Result<(), Error> {
         let is_client = std::env::var(_AFL_LAUNCHER_CLIENT);

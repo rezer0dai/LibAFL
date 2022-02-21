@@ -74,6 +74,8 @@ fn find_llvm_config() -> String {
 }
 
 fn main() {
+println!("LIBAFLL_CC try to run");
+
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
     let src_dir = Path::new("src");
@@ -154,7 +156,7 @@ fn main() {
             .status()
             .expect("Failed to compile cmplog-routines-pass.cc");
 
-        let _ = Command::new(llvm_bindir.join("clang++"))
+        let z = Command::new(llvm_bindir.join("clang++"))
             .args(&cxxflags)
             .args(&custom_flags)
             .arg(src_dir.join("afl-coverage-pass.cc"))
@@ -163,6 +165,8 @@ fn main() {
             .arg(out_dir.join(format!("afl-coverage-pass.{}", dll_extension())))
             .status()
             .expect("Failed to compile afl-coverage-pass.cc");
+
+println!("COMPILED STATUS {:?}", z);
 
         let _ = Command::new(llvm_bindir.join("clang++"))
             .args(&cxxflags)

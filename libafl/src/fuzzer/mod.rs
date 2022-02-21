@@ -350,6 +350,8 @@ where
             }
         }
 
+        let res = if state.corpus().count() > 200 { res } else { ExecuteInputResult::Corpus };
+
         match res {
             ExecuteInputResult::None => {
                 self.feedback_mut().discard_metadata(state, &input)?;

@@ -1,6 +1,7 @@
 //! A wide variety of mutations used during fuzzing.
 
 use crate::{
+
     bolts::{rands::Rand, tuples::Named},
     corpus::Corpus,
     inputs::{HasBytesVec, Input},
@@ -13,6 +14,7 @@ use alloc::{borrow::ToOwned, vec::Vec};
 use core::{
     cmp::{max, min},
     mem::size_of,
+    fmt::Debug,
 };
 
 /// Mem move in the own vec
@@ -1076,7 +1078,6 @@ where
                 return Ok(MutationResult::Skipped);
             }
         }
-
         let (first_diff, last_diff) = {
             let mut other_testcase = state.corpus().get(idx)?.borrow_mut();
             let other = other_testcase.load_input()?;
@@ -1184,7 +1185,8 @@ mod tests {
         S: HasRand + HasCorpus<I> + HasMetadata + HasMaxSize,
     {
         tuple_list!(
-            BitFlipMutator::new(),
+            BananizedAdapt::new(Box::new(SpliceBananasMutator::new())),
+            BananizedAdapt::new(Box::new(BitFlipMutator::new())),
             ByteFlipMutator::new(),
             ByteIncMutator::new(),
             ByteDecMutator::new(),
@@ -1195,14 +1197,14 @@ mod tests {
             DwordAddMutator::new(),
             QwordAddMutator::new(),
             ByteInterestingMutator::new(),
-            WordInterestingMutator::new(),
+            BananizedAdapt::new(Box::new(WordInterestingMutator::new())),
             DwordInterestingMutator::new(),
             BytesDeleteMutator::new(),
             BytesDeleteMutator::new(),
             BytesDeleteMutator::new(),
             BytesDeleteMutator::new(),
             BytesExpandMutator::new(),
-            BytesInsertMutator::new(),
+            BananizedAdapt::new(Box::new(BytesInsertMutator::new())),
             BytesRandInsertMutator::new(),
             BytesSetMutator::new(),
             BytesRandSetMutator::new(),

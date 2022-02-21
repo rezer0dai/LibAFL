@@ -163,6 +163,11 @@ pub trait CompilerWrapper {
     fn run(&mut self) -> Result<Option<i32>, Error> {
         let args = self.command()?;
 
+//args.push("-fPIC".to_string());
+//args.push("-Xclang".to_string());
+//args.push(args[args.len()-2].replace("cmplog-routines-pass.so", "afl-coverage-pass.so"));
+println!("PASSES {:?}", args);
+
         if !self.is_silent() {
             dbg!(&args);
         }
