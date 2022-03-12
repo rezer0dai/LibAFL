@@ -60,7 +60,7 @@ where
         if 0 == head.dmp_size {
             return Ok(MutationResult::Skipped)
         }
-        assert!(head.len == call.size, "incosisten header with description");
+        assert!(head.len == call.size, "incosisten header with description[# => {stage_idx:?}] {:?} vs {:?} ==> {:?}", head.len, call.size, head);
         let end = call.offset + head.len;
         let mut off = end - head.dmp_size;
         if end == off {

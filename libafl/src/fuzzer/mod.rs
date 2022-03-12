@@ -322,35 +322,39 @@ where
     {
         let mut res = ExecuteInputResult::None;
 
-        #[cfg(not(feature = "introspection"))]
-        let is_solution = self
-            .objective_mut()
-            .is_interesting(state, manager, &input, observers, exit_kind)?;
+        if ExitKind::BflErrorRepro != *exit_kind {
 
-        #[cfg(feature = "introspection")]
-        let is_solution = self
-            .objective_mut()
-            .is_interesting_introspection(state, manager, &input, observers, exit_kind)?;
-
-        if is_solution {
-            res = ExecuteInputResult::Solution;
-        } else {
             #[cfg(not(feature = "introspection"))]
-            let is_corpus = self
-                .feedback_mut()
+            let is_solution = self
+                .objective_mut()
                 .is_interesting(state, manager, &input, observers, exit_kind)?;
 
             #[cfg(feature = "introspection")]
-            let is_corpus = self
-                .feedback_mut()
+            let is_solution = self
+                .objective_mut()
                 .is_interesting_introspection(state, manager, &input, observers, exit_kind)?;
 
-            if is_corpus {
-                res = ExecuteInputResult::Corpus;
+
+            if is_solution {
+                res = ExecuteInputResult::Solution;
+            } else {
+                #[cfg(not(feature = "introspection"))]
+                let is_corpus = self
+                    .feedback_mut()
+                    .is_interesting(state, manager, &input, observers, exit_kind)?;
+
+                #[cfg(feature = "introspection")]
+                let is_corpus = self
+                    .feedback_mut()
+                    .is_interesting_introspection(state, manager, &input, observers, exit_kind)?;
+
+                if is_corpus {
+                    res = ExecuteInputResult::Corpus;
+                }
             }
         }
 
-        let res = if state.corpus().count() > 200 { res } else { ExecuteInputResult::Corpus };
+//        let res = if state.corpus().count() > 200 { res } else { ExecuteInputResult::Corpus };
 
         match res {
             ExecuteInputResult::None => {
@@ -476,6 +480,11 @@ where
         input: I,
     ) -> Result<usize, Error> {
         let exit_kind = self.execute_input(state, executor, manager, &input)?;
+        if ExitKind::BflErrorRepro == exit_kind {
+            return Err(Error::IllegalArgument(
+                    "POC provided could not be repro-ed".to_string()))
+        }
+        
         let observers = executor.observers();
         // Always consider this to be "interesting"
 

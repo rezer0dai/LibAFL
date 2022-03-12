@@ -7,7 +7,7 @@ use crate::{
     corpus::Corpus,
     state::{HasCorpus, HasRand},
     Error,
-    libbfl::{crossover, info::PocDataHeader},
+    libbfl::info::PocDataHeader,
 };
 
 use std::{rc::Rc, sync::RwLock};
@@ -41,7 +41,17 @@ where
         if size_of::<PocDataHeader>() == input.bytes().len() {
             return Ok(MutationResult::Skipped)
         }
-        if self.state.read().unwrap().crossdone() {
+
+        let poc_header = unsafe { 
+            &::std::slice::from_raw_parts(
+                input.bytes().as_ptr() as *const PocDataHeader, 1)[0] 
+        }.clone();
+
+        if !0 != poc_header.split_at {
+            return Ok(MutationResult::Skipped)
+        }
+
+        if !self.state.read().unwrap().generate() {
             return Ok(MutationResult::Skipped)
         }
         // We don't want to use the testcase we're already using for splicing
@@ -63,22 +73,34 @@ where
         let ind_a = banana_state.select_input_ind(stage_idx, state, input);
 
         let cc_b = get_calls_count(&other_bytes);
-        let ind_b = state.rand_mut().choose(0..cc_b);
-
-        let call_c = crossover::do_bananized_crossover(
-            input.bytes(), ind_a,
-            &other_bytes, ind_b,
-            state.rand_mut().choose(ind_b..cc_b));
-
-        if 0 == call_c.len() {
-            return Ok(MutationResult::Skipped)
+        if 1 == cc_b {
+            return Ok(MutationResult::Skipped);
         }
+        let ind_b = state.rand_mut().choose(0..cc_b - 1);
+
+        unsafe { 
+            let mut poc_a = &mut ::std::slice::from_raw_parts_mut(
+                input.bytes_mut().as_ptr() as *mut PocDataHeader, 1)[0];
+
+            poc_a.split_at = ind_a;
+            let limit = if cc_b - ind_b > 10 { 10 } else { cc_b - ind_b - 1 };
+            poc_a.split_cnt = state.rand_mut().choose(0..limit);
+
+        }
+        unsafe { 
+            &mut ::std::slice::from_raw_parts_mut(
+                other_bytes.as_ptr() as *mut PocDataHeader, 1)[0]
+        }.split_at = ind_b;
+
+
+//        let call_c = crossover::do_bananized_crossover(
+//            input.bytes(), ind_a,
+//            &other_bytes, ind_b,
+//            state.rand_mut().choose(ind_b..cc_b));
 
         input
             .bytes_mut()
-            .splice(0.., call_c.iter().copied());
-
-        banana_state.crossover();
+            .extend(other_bytes);
 
         Ok(MutationResult::Mutated)
     }
@@ -144,23 +166,21 @@ where
         if 0 == call_a.kin { // non-mutable call selected
             return Ok(MutationResult::Skipped);
         }
+
         let call_b = banana_state.select_kin_call(state, input, call_a.kin, &other_bytes);
         if call_a.kin != call_b.kin { // not-compatible call was selected
             return Ok(MutationResult::Skipped);
         }
-
-        let start_a = size_of::<PocDataHeader>() + call_a.offset;
-        let start_b = size_of::<PocDataHeader>() + call_a.offset;
-        let split_at = state.rand_mut().choose(0..call_a.size);
-
         if call_a.size != call_b.size {
-            panic!("[BFL] in-compatible calls meet at splice, with same kin!! {:?} vs {:?}", call_a, call_b)
+            return Ok(MutationResult::Skipped);
+//            panic!("[BFL] in-compatible calls meet at splice, with same kin!! {:?} vs {:?}", call_a, call_b)
         }
 
+        let split_at = state.rand_mut().choose(0..call_a.size);
         input
-            .bytes_mut()[start_a..][split_at..call_a.size]
+            .bytes_mut()[call_a.offset..][split_at..call_a.size]
             .clone_from_slice(
-                &other_bytes[start_b..][split_at..call_a.size]);
+                &other_bytes[call_b.offset..][split_at..call_a.size]);
 
         Ok(MutationResult::Mutated)
     }
@@ -207,11 +227,16 @@ where
                 input.bytes().as_ptr() as *const PocDataHeader, 1)[0] 
         }.magic { return Ok(MutationResult::Mutated) }
 */
+
         let poc_header = unsafe { 
             &mut ::std::slice::from_raw_parts_mut(
                 input.bytes_mut().as_ptr() as *mut PocDataHeader, 1)[0] };
 
         if !0 != poc_header.insert_ind {
+            return Ok(MutationResult::Skipped)
+        }
+
+        if !self.state.read().unwrap().generate() {
             return Ok(MutationResult::Skipped)
         }
 

@@ -262,6 +262,7 @@ impl Monitor for TuiMonitor {
             let run_time = cur_time - self.start_time;
 
             let mut ctx = self.context.write().unwrap();
+//            ctx.corpus_size_timed.add(run_time, 1 + (self.corpus_size() as f64).log2().ceil() as u64);
             ctx.corpus_size_timed.add(run_time, self.corpus_size());
             ctx.objective_size_timed
                 .add(run_time, self.objective_size());

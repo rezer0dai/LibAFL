@@ -54,6 +54,8 @@ pub enum ExitKind {
     Timeout,
     // The run resulted in a custom `ExitKind`.
     // Custom(Box<dyn SerdeAny>),
+    /// BFL error to repro updated poc
+    BflErrorRepro,
 }
 
 crate::impl_serdeany!(ExitKind);

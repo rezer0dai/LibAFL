@@ -913,13 +913,13 @@ where
 {
     /// Creates a new [`MultiMapObserver`]
     #[must_use]
-    pub fn new(name: &'static str, maps: &'a mut [&'a mut [T]]) -> Self {
+    pub fn new(name: &'static str, maps: Vec<&'static mut [T]>) -> Self {
         let mut idx = 0;
         let mut v = 0;
         let mut initial = T::default();
         let mut builder = vec![];
-        let maps: Vec<_> = maps
-            .iter_mut()
+        let maps = maps
+            .into_iter()
             .map(|x| {
                 if !x.is_empty() {
                     initial = x[0];
@@ -929,9 +929,35 @@ where
                 idx += l;
                 builder.push(r);
                 v += 1;
+                
                 OwnedSliceMut::from(x)
             })
             .collect();
+        Self {
+            maps,
+            intervals: builder.into_iter().collect::<IntervalTree<usize, usize>>(),
+            len: idx,
+            name: name.to_string(),
+            initial,
+            iter_idx: 0,
+        }
+    }
+    /// temporary hack
+    pub fn new_tuple(name: &'static str, mapa: &'a mut [T], mapb: &'a mut [T]) -> Self {
+        let mut idx = 0;
+        let initial = mapa[0];
+        let mut builder = vec![];
+        
+        let l = mapa.len();
+        let r = (idx..(idx + l), 0);
+        idx += l;
+        builder.push(r);
+
+        let maps: Vec<_> = vec![
+            OwnedSliceMut::from(mapa),
+            OwnedSliceMut::from(mapb)
+        ];
+
         Self {
             maps,
             intervals: builder.into_iter().collect::<IntervalTree<usize, usize>>(),

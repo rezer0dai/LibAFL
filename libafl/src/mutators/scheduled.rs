@@ -274,13 +274,14 @@ where
         BananizedAdapt::new(Rc::clone(&state), Box::new(BytesSetMutator::new())),
         BananizedAdapt::new(Rc::clone(&state), Box::new(BytesRandSetMutator::new())),
 
+        SpliceBananasMutator::new(Rc::clone(&state)),
+        InsertBanana::new(Rc::clone(&state)),
+        CrossoverBananasMutator::new(Rc::clone(&state)),
+
 // seems addine one more mutator and compilation will take forever
 // we will skip bytes copy mutator
 //        BananizedAdapt::new(Rc::clone(&state), Box::new(BytesCopyMutator::new())),
 
-        SpliceBananasMutator::new(Rc::clone(&state)),
-        InsertBanana::new(Rc::clone(&state)),
-        CrossoverBananasMutator::new(Rc::clone(&state)),
     ), state )
 }
 
