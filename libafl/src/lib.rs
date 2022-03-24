@@ -1,7 +1,6 @@
 /*!
 Welcome to `LibAFL`
 */
-
 #![cfg_attr(not(feature = "std"), no_std)]
 // For `type_eq`
 #![cfg_attr(unstable_feature, feature(specialization))]
@@ -63,12 +62,19 @@ Welcome to `LibAFL`
     )
 )]
 
+#![feature(drain_filter)]
+
+#[macro_use]
+extern crate lazy_static;
+
 #[macro_use]
 extern crate alloc;
 #[macro_use]
 extern crate static_assertions;
 #[deny(unused_extern_crates)]
 extern crate libbfl;
+#[allow(unused_extern_crates)]
+extern crate libbijon;
 #[cfg(feature = "std")]
 pub use ctor::ctor;
 

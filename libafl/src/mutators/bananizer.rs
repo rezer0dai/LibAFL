@@ -60,6 +60,10 @@ where
         if 0 == head.dmp_size {
             return Ok(MutationResult::Skipped)
         }
+        if head.len != call.size {
+            println!("incosisten header with description[# => {stage_idx:?}] {:?} vs {:?} ==> {:?}", head.len, call.size, head);
+            return Ok(MutationResult::Skipped)
+        }
         assert!(head.len == call.size, "incosisten header with description[# => {stage_idx:?}] {:?} vs {:?} ==> {:?}", head.len, call.size, head);
         let end = call.offset + head.len;
         let mut off = end - head.dmp_size;
@@ -99,6 +103,7 @@ where
             input.bytes()[off..][..size][ind..].to_vec()).into();
 
         let result = self.mutator.mutate(seed, &mut banana_input, stage_idx);
+println!("do mutate [{:?}] {:?} .. {:?}", result, (call.kin, head.cid, head.dmp_size), (off, size, ind));
 
         assert!(size - banana_input.bytes().len() == ind);
         (&input.bytes_mut()[off..][..size][ind..])

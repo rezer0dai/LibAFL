@@ -8,13 +8,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+
+
 #[cfg(feature = "std")]
 use std::{fs, fs::File, io::Write};
 
 use crate::{
     bolts::serdeany::SerdeAnyMap, corpus::Corpus, corpus::Testcase, inputs::Input,
+    bolts::rands::{Rand, StdRand},
     state::HasMetadata, Error,
 };
+
+use hashbrown::HashMap;
 
 /// Options for the the format of the on-disk metadata
 #[cfg(feature = "std")]
@@ -49,6 +54,10 @@ where
     current: Option<usize>,
     dir_path: PathBuf,
     meta_format: Option<OnDiskMetadataFormat>,
+
+    rand: StdRand,
+    hotest: usize,
+    redirect: HashMap<usize, usize>,
 }
 
 impl<I> Corpus<I> for OnDiskCorpus<I>
@@ -75,7 +84,7 @@ where
 
             let mut ctr = 2;
             let filename = loop {
-                let lockfile = format!(".{}.lafl_lock", file);
+                let lockfile = format!("{}.lafl_lock", file);
                 // try to create lockfile.
 
                 if OpenOptions::new()
@@ -125,8 +134,8 @@ where
         testcase
             .store_input()
             .expect("Could not save testcase to disk");
-        self.entries.push(RefCell::new(testcase));
-        Ok(self.entries.len() - 1)
+
+        Ok(self.place_to_list(testcase))
     }
 
     /// Replaces the testcase at the given idx
@@ -135,23 +144,48 @@ where
         if idx >= self.entries.len() {
             return Err(Error::KeyNotFound(format!("Index {} out of bounds", idx)));
         }
-        self.entries[idx] = RefCell::new(testcase);
-        Ok(())
+
+        //this hacked version will replace, if needed, entries[idx] with
+        //its real input, so redirect[idx] = 0
+        
+        let dest = self.dest(idx);
+
+        if testcase.input().is_some() {
+            // seems somebody wants to do really replace, OK go for it
+            self.entries[dest].replace(testcase);
+            // though we will keep the hotest
+        } else {
+            // ok request to just update at idx position with original
+            self.update_head_at(idx, dest, testcase)
+        }
+        return Ok(())
     }
 
     /// Removes an entry from the corpus, returning it if it was present.
     #[inline]
     fn remove(&mut self, idx: usize) -> Result<Option<Testcase<I>>, Error> {
         if idx >= self.entries.len() {
-            Ok(None)
-        } else {
-            Ok(Some(self.entries.remove(idx).into_inner()))
+            return Ok(None)
         }
+
+        let testcase = Testcase::<I>::default();
+
+        self.prepare_drop(idx);
+        self.update_hotest(idx);
+
+        self.redirect.insert(idx, self.hotest);
+        let entry = self.entries[idx].replace(testcase);
+        if let Some(ref path) = entry.filename() {
+            fs::remove_file(path)?;
+            fs::remove_file(format!("{}.lafl_lock", path))?;
+        }
+        Ok(Some(entry))
     }
 
     /// Get by id
     #[inline]
     fn get(&self, idx: usize) -> Result<&RefCell<Testcase<I>>, Error> {
+        let idx = self.dest(idx);
         Ok(&self.entries[idx])
     }
 
@@ -185,6 +219,9 @@ where
                 current: None,
                 dir_path,
                 meta_format: None,
+                rand: StdRand::with_seed(0x42),
+                hotest: 0,
+                redirect: HashMap::new(),
             })
         }
         new(dir_path.as_ref().to_path_buf())
@@ -202,6 +239,94 @@ where
             current: None,
             dir_path,
             meta_format,
+            rand: StdRand::with_seed(66),
+            hotest: 0,
+            redirect: HashMap::new(),
         })
+    }
+
+    fn dest(&self, idx: usize) -> usize {
+        if self.redirect.contains_key(&idx) {
+            return self.dest(self.redirect[&idx])
+        }
+        idx
+    }
+
+    fn update_head_at(
+        &mut self, 
+        idx: usize, 
+        dest: usize, 
+        testcase: Testcase<I>) 
+    {
+        if dest == idx {
+            return
+        }
+
+        self.redirect.insert(dest, idx);
+        let entry = self.entries[dest].replace(testcase);
+
+        self.redirect.remove(&idx);
+        self.entries[idx].replace(entry);
+
+        self.hotest = idx;
+    }
+
+    fn update_hotest(&mut self, idx: usize) {
+        if idx != self.hotest // its not itself as we are removing
+            && !self.redirect.contains_key(&self.hotest) // need to be real stuff
+        { return }
+// if no original entry insde we have bigger problem than choose assertion
+// and we want to boils up panic! here
+        self.hotest = self.rand.choose(
+            (0..self.entries.len())
+                .filter(|i| !self.redirect.contains_key(&i))
+                .filter(|&i| idx != i)
+                .collect::<Vec<usize>>());
+    }
+
+    fn prepare_drop(&mut self, dest: usize) {
+        if self.dest(dest) != dest {
+            return
+        }
+        let nodes = (0..self.entries.len())
+            .filter(|i| self.redirect.contains_key(i))//only refs
+            .filter(|&i| self.dest(i) == dest)//pointing to dest
+            .collect::<Vec<usize>>();
+        if 0 == nodes.len() { // nobody using it as reference
+            return // therefore removing original is OK
+        }
+// make sure that we delete final node at very end!!
+        let idx = self.rand.choose(nodes);//choose
+
+        assert!(idx != dest);// should be clear as the sky
+
+        let hotest = self.hotest;
+        self.update_head_at(
+            idx, dest, Testcase::<I>::default());
+        self.hotest = hotest;
+    }
+
+    fn place_to_list(&mut self, testcase: Testcase<I>) -> usize {
+        let is_real = testcase.input().is_some();
+        self.hotest = if self.redirect.is_empty() {
+            self.append(testcase)
+        } else {
+            self.zombiefy(testcase)
+        };
+        println!("[new poc] => {:?} => {:?}", 
+            self.hotest, is_real);
+        self.hotest
+    }
+
+    fn append(&mut self, testcase: Testcase<I>) -> usize {
+        self.entries.push(RefCell::new(testcase));
+        self.entries.len() - 1
+    }
+
+    fn zombiefy(&mut self, testcase: Testcase<I>) -> usize {
+        let idx = *self.rand.choose(self.redirect.keys());
+        self.entries[idx].replace(testcase);
+        self.redirect.remove(&idx);
+        idx
     }
 }

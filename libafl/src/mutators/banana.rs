@@ -2,13 +2,16 @@ use crate::{
     bolts::rands::Rand,
     inputs::{HasBytesVec, Input},
     state::HasRand,
-    libbfl::info::{PocDataHeader, PocCallDescription},
+    libbfl::info::{PocDataHeader, PocCallDescription, PocCallHeader},
     mutators::bananizer::get_calls_count,
 };
 
 use std::collections::BTreeSet;
 
 use core::mem::size_of;
+
+const N_ITERS: i32 = 3;//5;//how many mutations per generation ( original / crossover / insert )
+const N_GENERATIONS: i32 = 20;//how many crossover / inserts to stack up
 
 #[derive(Default, Debug)]
 pub struct BananaState {
@@ -27,7 +30,10 @@ impl BananaState {
         }
     }
 
-    pub fn generate(&self) -> bool { self.generate }
+    pub fn generate(&self) -> bool { 
+println!("GENERATION STATS : {:?}", (self.generate, self.stage_idx, (N_GENERATIONS * N_ITERS)));
+        self.generate && (0 != self.stage_idx % (N_GENERATIONS * N_ITERS)) 
+    }
 
     pub unsafe fn poc_mem(&self) -> *mut u8 {
         std::mem::transmute(self.poc.as_ptr())
@@ -56,29 +62,40 @@ impl BananaState {
         poc_header.total_size
     }
     fn register_stage<I: Input + HasBytesVec>(&mut self, stage_idx: i32, input: &mut I) {
+println!("--------------------------[BFL] sidx:{stage_idx}");
         if self.stage_idx == stage_idx {
             return
         }
         self.stage_idx = stage_idx;
 
-        //self.generate = 0 == (stage_idx % 10) || self.generate;//ok we want to add to input not just mutate
+        self.generate = 0 == (stage_idx % N_ITERS); //every 10th - TODO : config!!
+        if self.generate {
+            self.calls.clear()
+        }
         let nb_size = self.new_bananas(input.bytes());
+println!("--------------------------[BFL] {stage_idx} + {nb_size}");
         if 0 == nb_size {
+if self.generate() { println!("[BFL] failing to stack up insert/crossover at {stage_idx} level") }
+println!("--------------------------[BFL] no POC at all ...");
             return self.calls.clear()
         }//no banana inserted in latest AFL fuzz_one round..
 
-        if 0 != stage_idx {//first input query and mutation fuzz one we want to generate
+        let generate = self.generate;
+        self.generate = true;
+        if self.generate() {//0 != stage_idx {//0 != stage_idx {//first input query and mutation fuzz one we want to generate
             input
                 .bytes_mut()
                 .splice(0.., self.poc[..nb_size].iter().copied());
-        }
+        } else { self.calls.clear() }
+        self.generate = generate;
 
-        self.generate = 0 == (stage_idx % 10);
-        if !self.generate {
+        if self.generate() {
+println!("--------------------------[BFL] USING POC {stage_idx}");
             return
         }
-        self.calls.clear();
-        unsafe { 
+
+println!("--------------------------[BFL] deleting POC");
+        unsafe { //once we do this, we must generate, otherwise with this input no insert calls / crossover
             &mut ::std::slice::from_raw_parts_mut(
                 self.poc.as_ptr() as *mut PocDataHeader, 1)[0] 
         }.magic = 0;
@@ -95,7 +112,14 @@ impl BananaState {
         if 0 == self.calls.len() {
             self.register_call(input, seed);
         } 
-        *seed.rand_mut().choose(&self.calls)
+        if 0 == self.calls.len() {
+            return get_calls_count(input.bytes()) - 1 // should not happen btw
+        } 
+        let ind = *seed.rand_mut().choose(&self.calls);
+
+        if ind < get_calls_count(input.bytes()) {
+            ind
+        } else { 0 }
     }
     pub fn select_input_call<I: Input + HasBytesVec, S: HasRand>(
         &mut self,
@@ -132,6 +156,10 @@ impl BananaState {
             seed.rand_mut().choose(selection)
         } else { 0 };// poc_desc[0].kin = 0; mutation->skipped
 
+        let ind = if ind < get_calls_count(input.bytes()) {
+            ind
+        } else { 0 };
+
         poc_desc[ind]
     }
 
@@ -144,6 +172,10 @@ impl BananaState {
         let ind = if 0 != self.calls.len() {
             *seed.rand_mut().choose(&self.calls)
         } else { 0 };// poc_desc[0].kin = 0; mutation->skipped
+
+        let ind = if ind < get_calls_count(input) {
+            ind
+        } else { 0 };
 
         let poc_desc = unsafe { 
             ::std::slice::from_raw_parts(
@@ -159,13 +191,33 @@ impl BananaState {
             return
         }
 
+        let poc_desc = unsafe { 
+            ::std::slice::from_raw_parts(
+                input
+                    .bytes()[size_of::<PocDataHeader>()..]
+                    .as_ptr() as *const PocCallDescription, n_calls) };
+
+        //best if seed.rand_mut().choose_or(0, |x| ...)
+        let targets = (0..n_calls)
+            .filter(|&ind| 0 != unsafe { 
+                    ::std::slice::from_raw_parts(
+                        input.bytes()[poc_desc[ind].offset..
+                            ].as_ptr() as *const PocCallHeader, 1)[0] 
+                    }.dmp_size
+                )
+            .collect::<Vec<usize>>();
+        if 0 == targets.len() {
+            return
+        }
+        let ind = seed.rand_mut().choose(targets);
+
 //here is the quesion, to replace by random choose + set insert or to force random + insert ?
 /*
         if seed.rand_mut().choose(0..n_calls) < 2 * self.calls.len() {
             return
         }
 */
-        let ind = seed.rand_mut().choose(0..n_calls);
+//        let ind = seed.rand_mut().choose(0..n_calls);
 
 /*
         while self.calls.contains(&ind) {
@@ -175,6 +227,9 @@ impl BananaState {
 
         self.calls.insert(ind);
     }
+    /// THIS IS NO GOOD ( "break" at very least ), and 
+    /// overall need to rethink this kin strategy
+    /// for doing crossover in banana corpora
     fn register_kins<I: Input + HasBytesVec>(&mut self, input: &I, kin: usize) {
         assert!(0 != kin, "[BFL] 0==kin; should not happen tbh ...");
         let n_calls = get_calls_count(input.bytes());
@@ -184,13 +239,12 @@ impl BananaState {
                     .bytes()[size_of::<PocDataHeader>()..]
                     .as_ptr() as *const PocCallDescription, n_calls) };
 
-        for ind in 0..n_calls {
+        for ind in (0..n_calls)
+            //0 == kin, means choose random call
+            .filter(|&ind| 0 == kin || kin == poc_desc[ind].kin) 
+        {
             if poc_desc[ind].size < size_of::<usize>() {
                 panic!("[BFL] incorrect call data size {:?}/{:?} => {:?}", ind, n_calls, poc_desc[ind])
-            }
-            //0 == kin, means choose random call
-            if 0 != kin && kin != poc_desc[ind].kin {
-                continue
             }
             self.calls.insert(ind);
             break

@@ -11,7 +11,7 @@ use crate::{
     observers::ObserversTuple,
     stages::StagesTuple,
     start_timer,
-    state::{HasClientPerfMonitor, HasCorpus, HasExecutions, HasSolutions},
+    state::{HasClientPerfMonitor, HasMetadata, HasCorpus, HasExecutions, HasSolutions},
     Error,
 };
 
@@ -229,6 +229,8 @@ pub enum ExecuteInputResult {
     Corpus,
     /// This input leads to a solution
     Solution,
+    /// This input leads to a solution
+    BflErrorRepro,
 }
 
 /// Your default fuzzer instance, for everyday use.
@@ -305,7 +307,7 @@ where
     I: Input,
     OF: Feedback<I, S>,
     OT: ObserversTuple<I, S> + serde::Serialize + serde::de::DeserializeOwned,
-    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions,
+    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions + HasMetadata,
 {
     /// Evaluate if a set of observation channels has an interesting state
     fn process_execution<EM>(
@@ -352,12 +354,14 @@ where
                     res = ExecuteInputResult::Corpus;
                 }
             }
+        } else { 
+            res = ExecuteInputResult::BflErrorRepro;
         }
 
 //        let res = if state.corpus().count() > 200 { res } else { ExecuteInputResult::Corpus };
 
         match res {
-            ExecuteInputResult::None => {
+            ExecuteInputResult::BflErrorRepro | ExecuteInputResult::None => {
                 self.feedback_mut().discard_metadata(state, &input)?;
                 self.objective_mut().discard_metadata(state, &input)?;
                 Ok((res, None))
@@ -370,7 +374,10 @@ where
                 let mut testcase = Testcase::with_executions(input.clone(), *state.executions());
                 self.feedback_mut().append_metadata(state, &mut testcase)?;
                 let idx = state.corpus_mut().add(testcase)?;
-                self.scheduler_mut().on_add(state, idx)?;
+                if let Err(_) = self.scheduler_mut().on_add(state, idx) {
+                    state.corpus_mut().remove(idx)?;
+                    return Ok((ExecuteInputResult::None, None))
+                }
 
                 if send_events {
                     // TODO set None for fast targets
@@ -425,7 +432,7 @@ where
     F: Feedback<I, S>,
     I: Input,
     OF: Feedback<I, S>,
-    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions,
+    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions + HasMetadata,
 {
     /// Process one input, adding to the respective corpuses if needed and firing the right events
     #[inline]
@@ -456,7 +463,7 @@ where
     F: Feedback<I, S>,
     I: Input,
     OF: Feedback<I, S>,
-    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions,
+    S: HasCorpus<I> + HasSolutions<I> + HasClientPerfMonitor + HasExecutions + HasMetadata,
 {
     /// Process one input, adding to the respective corpuses if needed and firing the right events
     #[inline]
@@ -495,7 +502,11 @@ where
         let mut testcase = Testcase::with_executions(input.clone(), *state.executions());
         self.feedback_mut().append_metadata(state, &mut testcase)?;
         let idx = state.corpus_mut().add(testcase)?;
-        self.scheduler_mut().on_add(state, idx)?;
+        if let Err(_) = self.scheduler_mut().on_add(state, idx) {
+            state.corpus_mut().remove(idx)?;
+// actually not a new test case, it just redirect now to some known one
+            return Ok(idx) 
+        }
 
         let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {
             None

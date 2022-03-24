@@ -83,10 +83,11 @@ where
             mgr.log(
                 state,
                 LogSeverity::Warn,
-                "Corpus entry errored on execution!".into(),
+                format!("Corpus {} errored on execution!", input.generate_name(corpus_idx)).into(),
             )?;
             // assume one second as default time
-            Duration::from_secs(1)
+//            Duration::from_secs(1);
+            return Ok(())
         };
 
         let map_first = &executor
@@ -185,7 +186,7 @@ where
         let data = testcase
             .metadata_mut()
             .get_mut::<PowerScheduleTestcaseMetaData>()
-            .ok_or_else(|| Error::KeyNotFound("PowerScheduleTestData not found".to_string()))?;
+            .ok_or_else(|| Error::KeyNotFound("#3 PowerScheduleTestData not found".to_string()))?;
 
         data.set_bitmap_size(bitmap_size);
         data.set_handicap(handicap);

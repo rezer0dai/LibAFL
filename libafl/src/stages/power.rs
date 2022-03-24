@@ -4,9 +4,10 @@ use alloc::string::{String, ToString};
 use core::{fmt::Debug, marker::PhantomData};
 
 use crate::{
-    corpus::{Corpus, IsFavoredMetadata, PowerScheduleTestcaseMetaData, Testcase},
+    events::{EventFirer, LogSeverity},
+    corpus::{Corpus, DropoutsMetadata, IsFavoredMetadata, PowerScheduleTestcaseMetaData, Testcase},
     executors::{Executor, HasObservers},
-    fuzzer::Evaluator,
+    fuzzer::{Evaluator,ExecuteInputResult},
     inputs::Input,
     mutators::Mutator,
     observers::{MapObserver, ObserversTuple},
@@ -35,6 +36,7 @@ const HAVOC_MAX_MULT: f64 = 64.0;
 #[derive(Clone, Debug)]
 pub struct PowerMutationalStage<E, EM, I, M, O, OT, S, Z>
 where
+    EM: EventFirer<I>,
     E: Executor<EM, I, S, Z> + HasObservers<I, OT, S>,
     I: Input,
     M: Mutator<I, S>,
@@ -54,6 +56,7 @@ where
 impl<E, EM, I, M, O, OT, S, Z> MutationalStage<E, EM, I, M, S, Z>
     for PowerMutationalStage<E, EM, I, M, O, OT, S, Z>
 where
+    EM: EventFirer<I>,
     E: Executor<EM, I, S, Z> + HasObservers<I, OT, S>,
     I: Input,
     M: Mutator<I, S>,
@@ -102,7 +105,9 @@ where
     ) -> Result<(), Error> {
         let num = self.iterations(state, corpus_idx)?;
 
-        for i in 0..num {
+        let mut n_err = 0;
+        let mut i = 0;
+        while i < num {
             let mut input = state
                 .corpus()
                 .get(corpus_idx)?
@@ -112,7 +117,7 @@ where
 
             self.mutator_mut().mutate(state, &mut input, i as i32)?;
 
-            let (_, corpus_idx) = fuzzer.evaluate_input(state, executor, manager, input)?;
+            let (exit_reason, corpus_idx_ex) = fuzzer.evaluate_input(state, executor, manager, input)?;
 
             let observer = executor
                 .observers()
@@ -130,7 +135,7 @@ where
             // Update the path frequency
             psmeta.n_fuzz_mut()[hash] = psmeta.n_fuzz()[hash].saturating_add(1);
 
-            if let Some(idx) = corpus_idx {
+            if let Some(idx) = corpus_idx_ex {
                 state
                     .corpus()
                     .get(idx)?
@@ -138,12 +143,49 @@ where
                     .metadata_mut()
                     .get_mut::<PowerScheduleTestcaseMetaData>()
                     .ok_or_else(|| {
-                        Error::KeyNotFound("PowerScheduleTestData not found".to_string())
+                        Error::KeyNotFound("#5 PowerScheduleTestData not found".to_string())
                     })?
                     .set_n_fuzz_entry(hash);
             }
 
-            self.mutator_mut().post_exec(state, i as i32, corpus_idx)?;
+            self.mutator_mut().post_exec(state, i as i32, corpus_idx_ex)?;
+            if ExecuteInputResult::BflErrorRepro == exit_reason {
+                if 1 == i {
+                    return Ok(())
+                }
+            }
+
+            if ExecuteInputResult::BflErrorRepro == exit_reason {
+                n_err += 1;
+            } else {
+                n_err = 0;
+            }
+            if n_err > 3 {
+                break
+            }
+            // at first we need to repro
+            // otherwise we may try to change mutations
+            // but with corpus entry we at first need to be able to repro it!!
+            if 0 != i || 0 == n_err {
+                i += 1
+            }
+
+        }
+                    
+        if n_err > 3 {
+            let name = if let Some(ref name) = state
+                .corpus()
+                .get(corpus_idx)?
+                .borrow()
+                .filename()
+            { 
+                name.clone() 
+            } else { "unknown name".to_string() };
+            manager.log(
+                state,
+                LogSeverity::Warn,
+    format!("{corpus_idx}::{name} errored at : {:?}", (i, n_err))
+            )?;
         }
 
         Ok(())
@@ -152,6 +194,7 @@ where
 
 impl<E, EM, I, M, O, OT, S, Z> Stage<E, EM, S, Z> for PowerMutationalStage<E, EM, I, M, O, OT, S, Z>
 where
+    EM: EventFirer<I>,
     E: Executor<EM, I, S, Z> + HasObservers<I, OT, S>,
     I: Input,
     M: Mutator<I, S>,
@@ -170,13 +213,44 @@ where
         manager: &mut EM,
         corpus_idx: usize,
     ) -> Result<(), Error> {
+
         let ret = self.perform_mutational(fuzzer, executor, state, manager, corpus_idx);
+
+        let mut to_drop = if let Some(dropouts) = state
+            .metadata_mut()
+            .get_mut::<DropoutsMetadata>() {
+            dropouts.list.drain(..).collect::<Vec<(usize, usize)>>()
+        } else { return ret };
+
+        while 0 != to_drop.len() {
+            let (_, tgt) = to_drop[0];
+//            let hot = state.corpus_mut().remove(tgt)?.unwrap();
+//            state.corpus_mut().replace(src, hot)?;
+
+            // bit counterintutive, but hacked version of replace
+            // it will replace only if it is free slot
+            // free-ed by following remove, and now used just as a redirection
+            // to other testcase
+            // in fact it calls : update_head_at which make more sense as a name
+            state.corpus_mut().replace(tgt, Testcase::<I>::default())?;
+
+            to_drop
+                .drain_filter(|&mut (_, idx)| idx == tgt)
+//                .filter(|&(idx, _)| idx != tgt)
+                .for_each(|(idx, _)| {
+                    assert!(idx != tgt);
+                    // all removes will redirect to tgt now !!
+                    state.corpus_mut().remove(idx).unwrap();
+                });
+        }
+
         ret
     }
 }
 
 impl<E, EM, I, M, O, OT, S, Z> PowerMutationalStage<E, EM, I, M, O, OT, S, Z>
 where
+    EM: EventFirer<I>,
     E: Executor<EM, I, S, Z> + HasObservers<I, OT, S>,
     I: Input,
     M: Mutator<I, S>,
@@ -208,7 +282,7 @@ where
                 .borrow()
                 .metadata()
                 .get::<PowerScheduleTestcaseMetaData>()
-                .ok_or_else(|| Error::KeyNotFound("PowerScheduleTestData not found".to_string()))?
+                .ok_or_else(|| Error::KeyNotFound("#2 PowerScheduleTestData not found".to_string()))?
                 .n_fuzz_entry();
             fuzz_mu += libm::log2(f64::from(psmeta.n_fuzz()[n_fuzz_entry]));
             n_paths += 1;
@@ -241,14 +315,14 @@ where
             .ok_or_else(|| Error::KeyNotFound("exec_time not set".to_string()))?
             .as_nanos() as f64;
 
-        let avg_exec_us = psmeta.exec_time().as_nanos() as f64 / psmeta.cycles() as f64;
-        let avg_bitmap_size = psmeta.bitmap_size() / psmeta.bitmap_entries();
+        let avg_exec_us = psmeta.exec_time().as_nanos() as f64 / if 0 != psmeta.cycles() {psmeta.cycles() as f64} else {1.0};
+        let avg_bitmap_size = psmeta.bitmap_size() / if 0 != psmeta.bitmap_entries() { psmeta.bitmap_entries() } else { 1 };
 
         let favored = testcase.has_metadata::<IsFavoredMetadata>();
         let tcmeta = testcase
             .metadata_mut()
             .get_mut::<PowerScheduleTestcaseMetaData>()
-            .ok_or_else(|| Error::KeyNotFound("PowerScheduleTestData not found".to_string()))?;
+            .ok_or_else(|| Error::KeyNotFound("#4 PowerScheduleTestData not found".to_string()))?;
 
         if q_exec_us * 0.1 > avg_exec_us {
             perf_score = 10.0;

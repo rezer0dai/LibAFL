@@ -36,7 +36,7 @@ where
                 .borrow_mut()
                 .metadata_mut()
                 .get_mut::<PowerScheduleTestcaseMetaData>()
-                .ok_or_else(|| Error::KeyNotFound("PowerScheduleTestData not found".to_string()))?
+                .ok_or_else(|| Error::KeyNotFound("#1 PowerScheduleTestData not found".to_string()))?
                 .depth(),
             None => 0,
         };

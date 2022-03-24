@@ -398,8 +398,6 @@ where
 
         assert!(size <= map_state.history_map.len(), "The size of the associated map observer cannot exceed the size of the history map of the feedback. If you are running multiple instances of slightly different fuzzers (e.g. one with ASan and another without) synchronized using LLMP please check the `configuration` field of the LLMP manager.");
 
-        assert!(size <= observer.len());
-
         if self.novelties.is_some() {
             for i in 0..size {
                 let history = map_state.history_map[i];
@@ -439,7 +437,7 @@ where
                 state,
                 Event::UpdateUserStats {
                     name: self.name.to_string(),
-                    value: UserStats::Ratio(filled, size as u64),
+                    value: UserStats::Ratio(filled, observer.len() as u64),//size as u64),
                     phantom: PhantomData,
                 },
             )?;
@@ -653,6 +651,33 @@ where
     }
 }
 
+/// ...
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NovelIsNovel {}
+impl<T> IsNovel<T> for NovelIsNovel
+where
+    T: PrimInt + Default + Copy + 'static + Serialize + serde::de::DeserializeOwned,
+{
+    #[inline]
+    fn is_novel(_: T, new: T) -> bool {
+        T::min_value() != new
+    }
+}
+/// ...
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NoReducer {}
+impl<T> Reducer<T> for NoReducer
+where
+    T: PrimInt + Default + Copy + 'static + Serialize + serde::de::DeserializeOwned + PartialOrd,
+{
+    #[inline]
+    fn reduce(_: T, new: T) -> T {
+        new
+    }
+}
+/// ...
+pub type RotationAflMapFeedback<I, O, S, T> = MapFeedback<I, NovelIsNovel, O, NoReducer, S, T>;
+
 #[cfg(test)]
 mod tests {
     use crate::feedbacks::{AllIsNovel, IsNovel, NextPow2IsNovel};
@@ -661,6 +686,9 @@ mod tests {
     fn test_map_is_novel() {
         // sanity check
         assert!(AllIsNovel::is_novel(0_u8, 0));
+
+        assert!(!NovelIsNovel::is_novel(0_u8, NoReducer::reduce(0x42, 0)));
+        assert!(NovelIsNovel::is_novel(66, NoReducer::reduce(0x42, 66)));
 
         assert!(!NextPow2IsNovel::is_novel(0_u8, 0));
         assert!(NextPow2IsNovel::is_novel(0_u8, 1));

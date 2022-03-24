@@ -84,6 +84,9 @@ z3 = { version = "0.11", features = ["static-link-z3"], optional = true } # for 
 grammartec = { version = "0.1", optional = true }
 
 bfl = { path = "../../bananafzz/modules/bfl" }
+bijon = { path = "../../bananafzz/modules/bijon" }
+
+lazy_static = "1.4.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # For (*nix) libc

@@ -23,6 +23,9 @@ pub use banana::*;
 #[allow(missing_docs)]
 pub mod bfl;
 pub use bfl::*;
+#[allow(missing_docs)]
+pub mod bsched;
+pub use bsched::*;
 
 #[cfg(feature = "nautilus")]
 pub mod nautilus;

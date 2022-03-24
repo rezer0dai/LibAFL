@@ -19,6 +19,11 @@ pub use cached::CachedOnDiskCorpus;
 pub mod queue;
 pub use queue::QueueCorpusScheduler;
 
+pub mod rotator;
+pub use rotator::{
+    IndexesRotatingCorpusScheduler, DropoutsMetadata,
+};
+
 pub mod minimizer;
 pub use minimizer::{
     FavFactor, IndexesLenTimeMinimizerCorpusScheduler, IsFavoredMetadata,

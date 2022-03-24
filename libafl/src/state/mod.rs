@@ -400,7 +400,8 @@ where
                     let _ = fuzzer.add_input(self, executor, manager, input)?;
                 } else {
                     let (res, _) = fuzzer.evaluate_input(self, executor, manager, input)?;
-                    if res == ExecuteInputResult::None {
+                    if res == ExecuteInputResult::None 
+                        || ExecuteInputResult::BflErrorRepro == res {
                         println!("File {:?} was not interesting, skipped.", &path);
                     }
                 }

@@ -50,6 +50,9 @@ where
         if !0 != poc_header.split_at {
             return Ok(MutationResult::Skipped)
         }
+        if !0 != poc_header.insert_ind {
+            return Ok(MutationResult::Skipped)
+        }
 
         if !self.state.read().unwrap().generate() {
             return Ok(MutationResult::Skipped)
@@ -93,15 +96,11 @@ where
         }.split_at = ind_b;
 
 
-//        let call_c = crossover::do_bananized_crossover(
-//            input.bytes(), ind_a,
-//            &other_bytes, ind_b,
-//            state.rand_mut().choose(ind_b..cc_b));
-
         input
             .bytes_mut()
             .extend(other_bytes);
 
+println!("do+crossover");
         Ok(MutationResult::Mutated)
     }
 }
@@ -236,13 +235,17 @@ where
             return Ok(MutationResult::Skipped)
         }
 
-        if !self.state.read().unwrap().generate() {
+        if !0 != poc_header.split_at {
             return Ok(MutationResult::Skipped)
         }
 
         let mut banana_state = self.state.write().unwrap();
 
         let ind = banana_state.select_input_ind(stage_idx, state, input);
+
+        if !banana_state.generate() {
+            return Ok(MutationResult::Skipped)
+        }
         
         poc_header.insert_ind = ind;
 
@@ -263,6 +266,73 @@ impl InsertBanana {
     #[must_use]
     pub fn new(state: Rc<RwLock<BananaState>>) -> Self {
         InsertBanana {
+            state: state,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AppendBanana {
+    state: Rc<RwLock<BananaState>>,
+}
+
+impl<I, S> Mutator<I, S> for AppendBanana
+where
+    I: Input + HasBytesVec,
+    S: HasRand + HasCorpus<I>,
+{
+    #[allow(clippy::cast_sign_loss)]
+    fn mutate(
+        &mut self,
+        _state: &mut S,
+        input: &mut I,
+        _stage_idx: i32,
+    ) -> Result<MutationResult, Error> {
+        // lets select where we will place call, preferably connected to calls mutated by AFL logic
+/*
+// TESTING performance of bananafzz repro only
+        if 66 == unsafe { 
+            &::std::slice::from_raw_parts(
+                input.bytes().as_ptr() as *const PocDataHeader, 1)[0] 
+        }.magic { return Ok(MutationResult::Mutated) }
+*/
+
+        let poc_header = unsafe { 
+            &mut ::std::slice::from_raw_parts_mut(
+                input.bytes_mut().as_ptr() as *mut PocDataHeader, 1)[0] };
+
+        if !0 != poc_header.insert_ind {
+            return Ok(MutationResult::Skipped)
+        }
+
+        if !0 != poc_header.split_at {
+            return Ok(MutationResult::Skipped)
+        }
+
+        let banana_state = self.state.read().unwrap();
+        if !banana_state.generate() {
+            return Ok(MutationResult::Skipped)
+        }
+
+        let ind = get_calls_count(input.bytes());
+        
+        poc_header.insert_ind = ind;
+
+        Ok(MutationResult::Mutated)
+    }
+}
+
+impl Named for AppendBanana {
+    fn name(&self) -> &str {
+        "AppendBanana"
+    }
+}
+
+impl AppendBanana {
+    /// Creates a new [`AppendBanana`].
+    #[must_use]
+    pub fn new(state: Rc<RwLock<BananaState>>) -> Self {
+        AppendBanana {
             state: state,
         }
     }
