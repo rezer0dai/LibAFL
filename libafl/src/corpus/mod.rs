@@ -21,7 +21,7 @@ pub use queue::QueueCorpusScheduler;
 
 pub mod rotator;
 pub use rotator::{
-    IndexesRotatingCorpusScheduler, DropoutsMetadata,
+    IndexesRotatingCorpusScheduler, DropoutsMetadata, DropoutInfo,
 };
 
 pub mod minimizer;

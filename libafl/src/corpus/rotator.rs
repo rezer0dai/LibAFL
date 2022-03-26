@@ -18,33 +18,43 @@ use serde::{Deserialize, Serialize};
 /// Default probability to skip the non-favored values
 pub const DEFAULT_SKIP_NON_FAVORED_PROB: u64 = 95;
 
-crate::impl_serdeany!(DropoutsMetadata);
-
+/// unique information per input drop
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DropoutInfo {
+    /// corpus idx of input do drop
+    pub idx: usize,
+    /// corpus idx of input to replace with
+    pub tgt: usize,
+    /// corpus id based on hash of input data for input to drop
+    pub cid: u64,
+}
 /// integral structure for rotating of inputs
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DropoutsMetadata {
     /// ...
-    pub list: Vec<(usize, usize)>,
+    pub list: Vec<DropoutInfo>,
 }
+crate::impl_serdeany!(DropoutsMetadata);
 
 /// integral structure for rotating of inputs
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RotationMeta {
     idx: usize,
     counter: usize,
+    cid: u64,
+    elem: usize,
 }
 
 /// A state metadata holding a map of favoreds testcases for each map entry
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TopRatedsMetadata {
+pub struct RotatorsMetadata {
     /// map index -> corpus index
     pub map: HashMap<usize, RotationMeta>,
 }
+crate::impl_serdeany!(RotatorsMetadata);
 
-crate::impl_serdeany!(TopRatedsMetadata);
-
-impl TopRatedsMetadata {
-    /// Creates a new [`struct@TopRatedsMetadata`]
+impl RotatorsMetadata {
+    /// Creates a new [`struct@RotatorsMetadata`]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -53,7 +63,7 @@ impl TopRatedsMetadata {
     }
 }
 
-impl Default for TopRatedsMetadata {
+impl Default for RotatorsMetadata {
     fn default() -> Self {
         Self::new()
     }
@@ -85,8 +95,8 @@ where
 {
     /// Add an entry to the corpus and return its index
     fn on_add(&self, state: &mut S, idx: usize) -> Result<(), Error> {
-        self.update_score(state, idx)?;
-        self.base.on_add(state, idx)
+        self.base.on_add(state, idx)?;
+        self.update_score(state, idx)
     }
 
     /// Replaces the testcase at the given idx
@@ -135,125 +145,128 @@ where
     #[allow(clippy::cast_possible_wrap)]
     pub fn update_score(&self, state: &mut S, idx: usize) -> Result<(), Error> {
         // Create a new top rated meta if not existing
-        if state.metadata().get::<TopRatedsMetadata>().is_none() {
-            state.add_metadata(TopRatedsMetadata::new());
+        if state.metadata().get::<RotatorsMetadata>().is_none() {
+            state.add_metadata(RotatorsMetadata::new());
         }
-
         if state.metadata().get::<DropoutsMetadata>().is_none() {
             state.add_metadata(DropoutsMetadata { list : vec![] });
         }
+// idx is not unique identifier once we remove from ondisk, but hash should be
+        let cid = get_cid(state, idx);
+// avoid favorizing replaying input which was deemed to drop but was not droped yet
+        if state
+            .metadata()
+            .get::<DropoutsMetadata>()
+            .unwrap()
+            .list
+            .iter()
+            .filter(|&info| cid == info.cid)
+            .nth(0) 
+            .is_some()
+        { // keep it from sadman's parade - spamming disk of doubles inputs
+            return Err(
+                Error::KeyNotFound(format!("Input waiting to drop")))
+        }
 
-        // ok lets query metadata aka coverage edge indicies
-        let meta = state
+// ok lets query metadata aka coverage edge indicies
+        let meta = state 
             .corpus()
-            .get(idx)?
+            .get(idx).unwrap()
             .borrow()
             .metadata()
-            .get::<M>().ok_or_else(|| {
-                Error::KeyNotFound(format!(
-                    "Metadata needed for RotatingCorpusScheduler not found in testcase #{}",
-                    idx
-                ))
-            })?
+            .get::<M>().unwrap()
             .as_slice()
             .to_vec();
 
-
-        let cid = get_cid(state, idx);
-
-        let mut visited = HashSet::new();
+// separate novels from potential cadidates for rotation
+        let (dropouts, novels): (Vec<(usize, Option<bool>)>, _) = meta
+            .iter()
+            .map(|elem| if let Some(ref mut info) = state
+                    .metadata_mut()
+                    .get_mut::<RotatorsMetadata>()
+                    .unwrap()
+                    .map
+                    .get_mut(elem)
+                {
+                    info.counter += 1;
+                    (elem.clone(), Some(info.counter > 0x42))
+                } else { (elem.clone(), None) })
+            .partition(|(_, info)| info.is_some());
 
         let mut new_favoreds = vec![];
 
-        let to_drop = meta
+        let mut dropouts = dropouts
             .iter()
-            .filter(|&elem| if let Some(ref mut info) = state
-                    .metadata_mut()
-                    .get_mut::<TopRatedsMetadata>()
-                    .unwrap()
-                    .map
-                    .get_mut(elem) 
-                {
-                    if !visited.contains(&info.idx) {
-                        info.counter += 1
-                    }
-                    visited.insert(info.idx);
-                    info.counter > 0x42
-                } else { 
-                    new_favoreds.push(*elem);
-                    false 
-                })
-// we need to to chain it like this, as at first we want to update TopRatedsMetadata
-// by info.counters...
-            .map(|elem| *elem)
-            .collect::<Vec<usize>>()
-            .iter()
-//now we are back ... to continue to work with updated TopRatedsMetadata
-            .map(|&elem| (elem, state
+            // check if fuzzed enough cycles, if so then rotate
+            .filter(|&(_, fuzzed_enough)| fuzzed_enough.unwrap())
+            // adding corpus-idx of fuzzed enough target
+            .map(|(elem, _)| state
                     .metadata()
-                    .get::<TopRatedsMetadata>()
-                    .unwrap()
+                    .get::<RotatorsMetadata>().unwrap()
                     .map
-                    .get(&elem)
-                    .unwrap()
-                    .idx))
-            .filter(|&(_, old_idx)| get_cid(state, old_idx) != cid) // avoid self pointers
-            .filter(|&(elem, old_idx)| {
-                assert!(idx != old_idx);
-                new_favoreds.push(elem); // ok here we collect ones which is ok to ROTATE
-                0 == state // and collect all whose are fully expandalble 
+                    .get(&elem).unwrap())
+            // avoid self pointers
+            .filter(|info| info.cid != cid)
+            // just in case input was cleared and we are not able to get hash anymore
+            .inspect(|info| assert!(info.idx != idx))//.filter(|info| info.idx != idx)//
+            // ok here we collect unique-ones which are ok to ROTATE
+            .inspect(|info| new_favoreds.push((info.elem, None)))
+            // and collect all whose are fully expandalble by now
+            .filter(|info| if let Some(ref mut old_meta) = state 
                     .corpus()
-                    .get(old_idx).unwrap()
+                    .get(info.idx).unwrap()
                     .borrow_mut()
                     .metadata_mut()
-                    .get_mut::<M>().unwrap()
-                    .refcnt_mut()
-                    .checked_sub(1)
-                    .unwrap() // we want panic here if below 0!
-                //drop(old.metadata_mut().remove::<M>());
-                //println!("DROP: {elem}::{:?} + REPLACE", old.filename());
-            })
-            .map(|(_, old_idx)| (old_idx, idx))
-            .collect::<Vec<(usize, usize)>>();
+                    .get_mut::<M>() 
+                {
+                    *old_meta.refcnt_mut() -= 1;
+                    assert!(old_meta.refcnt() >= 0);
+                    0 == old_meta.refcnt()
+                } else { false })
+            .map(|info| DropoutInfo{ idx:info.idx, tgt:idx, cid:info.cid })
+            .collect::<Vec<DropoutInfo>>();
 
-        if new_favoreds.is_empty() {
-            println!("DROPING INPUT!! -> we got better : {:?}", meta.len());
-            return Err(Error::KeyNotFound(format!("droping un-interesting input")))
+// if nothing to contribute ( nove, or exchange in rotation ) then signal to remove from corpus
+        if new_favoreds.is_empty() && novels.is_empty() {
+            println!("DROPING INPUT!! -> we got better : {:?} <{:?}>", meta.len(),
+                state.corpus().get(idx).unwrap().borrow().filename().as_ref().unwrap());
+            return Err(
+                Error::KeyNotFound(format!("DROPING: non-( or way T00 MUCHO) interesting input ({})",
+                    state.corpus().get(idx).unwrap().borrow().filename().as_ref().unwrap())));
         }
 
-        state
+// keep count of inputs relevancy in fuzzing rotation
+        *state
             .corpus()
             .get(idx).unwrap()
             .borrow_mut()
             .metadata_mut()
             .get_mut::<M>().unwrap()
-            .refcnt_mut()
-            .checked_add(new_favoreds.len() as isize)
-            .ok_or_else(|| 
-                Error::KeyNotFound(format!("droping T00 MUCHO interesting input"))
-            )?;
-
-        state // every new stuff will get time to shine
-            .corpus()
-            .get(idx).unwrap()
-            .borrow_mut()
-            .add_metadata(IsFavoredMetadata {});
-
-        for elem in new_favoreds {
-            state
-                .metadata_mut()
-                .get_mut::<TopRatedsMetadata>()
-                .unwrap()
-                .map
-                .insert(elem, RotationMeta{ idx: idx, counter: 0 });
+            .refcnt_mut() += (new_favoreds.len() + novels.len()) as isize;
+// if novel we want to favor it until given enough time
+        if 0 != novels.len() {
+            state // every new stuff will get time to shine
+                .corpus()
+                .get(idx).unwrap()
+                .borrow_mut()
+                .add_metadata(IsFavoredMetadata {});
         }
-
+// register our top_rateds
+        novels.iter().chain(new_favoreds.iter())
+            .for_each(|&(elem, _)| {
+                state
+                    .metadata_mut()
+                    .get_mut::<RotatorsMetadata>().unwrap()
+                    .map
+                    .insert(elem, RotationMeta{ idx: idx, counter: 0, cid: cid, elem: elem });
+            });
+// register what to drop
         state
             .metadata_mut()
             .get_mut::<DropoutsMetadata>()
             .unwrap()
             .list
-            .extend_from_slice(&to_drop);
+            .append(&mut dropouts);
 
         return Ok(())
     }
@@ -261,17 +274,20 @@ where
     /// Cull the `Corpus` using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
     pub fn cull(&self, state: &mut S) -> Result<(), Error> {
-        let top_rated = if let Some(tops) = state.metadata().get::<TopRatedsMetadata>() 
+        let top_rated = if let Some(tops) = state.metadata().get::<RotatorsMetadata>() 
             { tops } else { return Ok(()) };
 
-        for &idx in top_rated.map
+        let need_more = top_rated.map
             .values()
-            .filter(|&info| info.counter > 66)
-            .map(|ref info| (get_cid(state, info.idx), info.idx))
-            .collect::<HashMap<u64, usize>>()
+            .filter(|&info| info.counter < 66)
+            .map(|ref info| info.cid)
+            .collect::<HashSet<u64>>();
+
+        for info in top_rated.map
             .values()
+            .filter(|&info| !need_more.contains(&info.cid))
         {
-            let mut entry = state.corpus().get(idx)?.borrow_mut();
+            let mut entry = state.corpus().get(info.idx)?.borrow_mut();
 
             assert!(entry.metadata().get::<M>().is_some(),
                 //by definition meta is there until last reference is droped
@@ -282,7 +298,7 @@ where
             if !entry.has_metadata::<IsFavoredMetadata>() {
                 continue
             }
-            
+
             drop(// ok here i just follow pattern, not sure why need do explicitelly drop ?
                 entry.metadata_mut().remove::<IsFavoredMetadata>()
             );
@@ -328,10 +344,22 @@ where
     I: Input + HasBytesVec,
     S: HasCorpus<I>,
 {
-    if let Some(input) = state
+    let mut testcase = state
         .corpus()
         .get(idx).unwrap()
-        .borrow()
-        .input() 
-    { hash(input.bytes()) } else { 0 }
+        .borrow_mut();
+    let (in_mem, bytes) = match testcase.load_input() {
+        Ok(input) => (true, input.bytes().as_ref()),
+        _ => (false, testcase // if in disk then banana modifications have been too
+                .load_input().unwrap()
+                .bytes().as_ref())
+    };
+    let hash = hash(bytes);
+// NOTE :   i am not sure what is criterion on storing memory to file in LibAFL
+//          therefore likely we dont need to store it, as once modified by BFL
+//          it will be stored by default to disk
+    if in_mem { // we want bananized input to store to file
+        testcase.store_input().unwrap();
+    }
+    hash
 }

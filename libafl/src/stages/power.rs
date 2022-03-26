@@ -3,9 +3,11 @@
 use alloc::string::{String, ToString};
 use core::{fmt::Debug, marker::PhantomData};
 
+use hashbrown::HashSet;
+
 use crate::{
     events::{EventFirer, LogSeverity},
-    corpus::{Corpus, DropoutsMetadata, IsFavoredMetadata, PowerScheduleTestcaseMetaData, Testcase},
+    corpus::{Corpus, DropoutInfo, DropoutsMetadata, IsFavoredMetadata, PowerScheduleTestcaseMetaData, Testcase},
     executors::{Executor, HasObservers},
     fuzzer::{Evaluator,ExecuteInputResult},
     inputs::Input,
@@ -114,7 +116,7 @@ where
                 .borrow_mut()
                 .load_input()?
                 .clone();
-
+println!("fuzzing #{corpus_idx} {i}x");
             self.mutator_mut().mutate(state, &mut input, i as i32)?;
 
             let (exit_reason, corpus_idx_ex) = fuzzer.evaluate_input(state, executor, manager, input)?;
@@ -184,7 +186,7 @@ where
             manager.log(
                 state,
                 LogSeverity::Warn,
-    format!("{corpus_idx}::{name} errored at : {:?}", (i, n_err))
+                format!("{corpus_idx}::{name} errored at ({i}/{n_err})")
             )?;
         }
 
@@ -215,17 +217,16 @@ where
     ) -> Result<(), Error> {
 
         let ret = self.perform_mutational(fuzzer, executor, state, manager, corpus_idx);
-
-        let mut to_drop = if let Some(dropouts) = state
+        let mut to_drop = if let Some(ref mut dropouts) = state
             .metadata_mut()
             .get_mut::<DropoutsMetadata>() {
-            dropouts.list.drain(..).collect::<Vec<(usize, usize)>>()
+            dropouts.list.drain(..).collect::<Vec<DropoutInfo>>()
         } else { return ret };
 
+        let mut droped = HashSet::new(); // this is questionable if we should handle here
+        // or we should provide solid one way drop list ..
         while 0 != to_drop.len() {
-            let (_, tgt) = to_drop[0];
-//            let hot = state.corpus_mut().remove(tgt)?.unwrap();
-//            state.corpus_mut().replace(src, hot)?;
+            let tgt = to_drop[0].tgt;
 
             // bit counterintutive, but hacked version of replace
             // it will replace only if it is free slot
@@ -234,14 +235,16 @@ where
             // in fact it calls : update_head_at which make more sense as a name
             state.corpus_mut().replace(tgt, Testcase::<I>::default())?;
 
-            to_drop
-                .drain_filter(|&mut (_, idx)| idx == tgt)
-//                .filter(|&(idx, _)| idx != tgt)
-                .for_each(|(idx, _)| {
-                    assert!(idx != tgt);
-                    // all removes will redirect to tgt now !!
-                    state.corpus_mut().remove(idx).unwrap();
-                });
+            while 0 != to_drop.len() 
+                && tgt == to_drop[0].tgt
+            {
+                let info = to_drop.remove(0);
+                assert!(info.idx != tgt);
+                if !droped.contains(&info.idx) {
+                    state.corpus_mut().remove(info.idx).unwrap();
+                } 
+                droped.insert(info.idx);
+            }
         }
 
         ret

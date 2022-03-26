@@ -40,6 +40,19 @@ where
                 .depth(),
             None => 0,
         };
+        /*
+        let mut depth = match current_idx {
+            Some(idx) => if let Some(meta) = state
+                .corpus()
+                .get(idx)?
+                .borrow_mut()
+                .metadata_mut()
+                .get_mut::<PowerScheduleTestcaseMetaData>() {
+                    meta.depth()
+                } else { 0 },
+            None => 0,
+        };
+        */
 
         // Attach a `PowerScheduleTestData` to the queue entry.
         depth += 1;

@@ -31,7 +31,6 @@ impl BananaState {
     }
 
     pub fn generate(&self) -> bool { 
-println!("GENERATION STATS : {:?}", (self.generate, self.stage_idx, (N_GENERATIONS * N_ITERS)));
         self.generate && (0 != self.stage_idx % (N_GENERATIONS * N_ITERS)) 
     }
 
@@ -62,7 +61,6 @@ println!("GENERATION STATS : {:?}", (self.generate, self.stage_idx, (N_GENERATIO
         poc_header.total_size
     }
     fn register_stage<I: Input + HasBytesVec>(&mut self, stage_idx: i32, input: &mut I) {
-println!("--------------------------[BFL] sidx:{stage_idx}");
         if self.stage_idx == stage_idx {
             return
         }
@@ -73,10 +71,8 @@ println!("--------------------------[BFL] sidx:{stage_idx}");
             self.calls.clear()
         }
         let nb_size = self.new_bananas(input.bytes());
-println!("--------------------------[BFL] {stage_idx} + {nb_size}");
         if 0 == nb_size {
 if self.generate() { println!("[BFL] failing to stack up insert/crossover at {stage_idx} level") }
-println!("--------------------------[BFL] no POC at all ...");
             return self.calls.clear()
         }//no banana inserted in latest AFL fuzz_one round..
 
@@ -90,11 +86,9 @@ println!("--------------------------[BFL] no POC at all ...");
         self.generate = generate;
 
         if self.generate() {
-println!("--------------------------[BFL] USING POC {stage_idx}");
             return
         }
 
-println!("--------------------------[BFL] deleting POC");
         unsafe { //once we do this, we must generate, otherwise with this input no insert calls / crossover
             &mut ::std::slice::from_raw_parts_mut(
                 self.poc.as_ptr() as *mut PocDataHeader, 1)[0] 

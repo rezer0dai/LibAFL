@@ -62,7 +62,7 @@ Welcome to `LibAFL`
     )
 )]
 
-#![feature(drain_filter)]
+#![feature(drain_filter, mixed_integer_ops)]
 
 #[macro_use]
 extern crate lazy_static;

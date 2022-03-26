@@ -19,7 +19,7 @@ use crate::{
     state::HasMetadata, Error,
 };
 
-use hashbrown::HashMap;
+use hashbrown::{HashSet, HashMap};
 
 /// Options for the the format of the on-disk metadata
 #[cfg(feature = "std")]
@@ -135,7 +135,8 @@ where
             .store_input()
             .expect("Could not save testcase to disk");
 
-        Ok(self.place_to_list(testcase))
+        self.hotest = self.place_to_list(testcase);
+        Ok(self.hotest)
     }
 
     /// Replaces the testcase at the given idx
@@ -147,7 +148,6 @@ where
 
         //this hacked version will replace, if needed, entries[idx] with
         //its real input, so redirect[idx] = 0
-        
         let dest = self.dest(idx);
 
         if testcase.input().is_some() {
@@ -158,6 +158,7 @@ where
             // ok request to just update at idx position with original
             self.update_head_at(idx, dest, testcase)
         }
+        self.hotest = idx;
         return Ok(())
     }
 
@@ -172,7 +173,6 @@ where
 
         self.prepare_drop(idx);
         self.update_hotest(idx);
-
         self.redirect.insert(idx, self.hotest);
         let entry = self.entries[idx].replace(testcase);
         if let Some(ref path) = entry.filename() {
@@ -185,8 +185,7 @@ where
     /// Get by id
     #[inline]
     fn get(&self, idx: usize) -> Result<&RefCell<Testcase<I>>, Error> {
-        let idx = self.dest(idx);
-        Ok(&self.entries[idx])
+        Ok(&self.entries[self.dest(idx)])
     }
 
     /// Current testcase scheduled
@@ -267,8 +266,6 @@ where
 
         self.redirect.remove(&idx);
         self.entries[idx].replace(entry);
-
-        self.hotest = idx;
     }
 
     fn update_hotest(&mut self, idx: usize) {
@@ -300,22 +297,16 @@ where
 
         assert!(idx != dest);// should be clear as the sky
 
-        let hotest = self.hotest;
         self.update_head_at(
             idx, dest, Testcase::<I>::default());
-        self.hotest = hotest;
     }
 
     fn place_to_list(&mut self, testcase: Testcase<I>) -> usize {
-        let is_real = testcase.input().is_some();
-        self.hotest = if self.redirect.is_empty() {
+        if self.redirect.is_empty() {
             self.append(testcase)
         } else {
             self.zombiefy(testcase)
-        };
-        println!("[new poc] => {:?} => {:?}", 
-            self.hotest, is_real);
-        self.hotest
+        }
     }
 
     fn append(&mut self, testcase: Testcase<I>) -> usize {
@@ -324,9 +315,29 @@ where
     }
 
     fn zombiefy(&mut self, testcase: Testcase<I>) -> usize {
-        let idx = *self.rand.choose(self.redirect.keys());
-        self.entries[idx].replace(testcase);
+        let values = self.redirect
+            .values()
+            .copied()
+            .collect::<HashSet<usize>>();
+// ok we will need to choose leaf node, from reversed tree
+        let idx = self.rand.choose(
+            self.redirect
+                .keys()
+                .copied()
+                .collect::<HashSet<usize>>()
+                .difference(&values)
+                .collect::<Vec<&usize>>()).clone();
+            /*
+        let idx = loop {
+            let idx = *self.rand.choose(self.redirect.keys());
+            if !self.redirect.values().contains(idx) {
+                break idx
+            }
+        }
+        assert!(!self.redirect.values().copied().collect::<Vec<usize>>().contains(&idx));
+            */
         self.redirect.remove(&idx);
+        self.entries[idx].replace(testcase);
         idx
     }
 }

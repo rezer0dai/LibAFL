@@ -653,8 +653,8 @@ where
 
 /// ...
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct NovelIsNovel {}
-impl<T> IsNovel<T> for NovelIsNovel
+pub struct NewIsNovel {}
+impl<T> IsNovel<T> for NewIsNovel
 where
     T: PrimInt + Default + Copy + 'static + Serialize + serde::de::DeserializeOwned,
 {
@@ -676,7 +676,7 @@ where
     }
 }
 /// ...
-pub type RotationAflMapFeedback<I, O, S, T> = MapFeedback<I, NovelIsNovel, O, NoReducer, S, T>;
+pub type RotationAflMapFeedback<I, O, S, T> = MapFeedback<I, NewIsNovel, O, NoReducer, S, T>;
 
 #[cfg(test)]
 mod tests {
@@ -687,8 +687,8 @@ mod tests {
         // sanity check
         assert!(AllIsNovel::is_novel(0_u8, 0));
 
-        assert!(!NovelIsNovel::is_novel(0_u8, NoReducer::reduce(0x42, 0)));
-        assert!(NovelIsNovel::is_novel(66, NoReducer::reduce(0x42, 66)));
+        assert!(!NewIsNovel::is_novel(0_u8, NoReducer::reduce(0x42, 0)));
+        assert!(NewIsNovel::is_novel(66, NoReducer::reduce(0x42, 66)));
 
         assert!(!NextPow2IsNovel::is_novel(0_u8, 0));
         assert!(NextPow2IsNovel::is_novel(0_u8, 1));

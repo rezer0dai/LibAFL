@@ -6,6 +6,9 @@ pub use map::*;
 pub mod cmp;
 pub use cmp::*;
 
+pub mod bijon;
+pub use bijon::*;
+
 pub mod concolic;
 
 #[cfg(unstable_feature)]
