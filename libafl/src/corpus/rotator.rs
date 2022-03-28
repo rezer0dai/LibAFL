@@ -140,8 +140,10 @@ where
             .metadata_mut()
             .get_mut::<RotatorsMetadata>().unwrap()
             .parent = idx; // keep corpus minimal w.r.t to active coverage set
-println!("--------------> choosen one : #{idx} priority ? {:?}", 
-   state.corpus().get(idx)?.borrow().has_metadata::<IsFavoredMetadata>());
+
+//        println!("--------------> choosen one : #{idx} priority ? {:?}", 
+//           state.corpus().get(idx)?.borrow().has_metadata::<IsFavoredMetadata>());
+
         Ok(idx)
     }
 }
@@ -315,6 +317,7 @@ where
                 .borrow_mut()
                 .has_metadata::<IsFavoredMetadata>() 
             { n_favored += 1 })
+            .inspect(|&info| assert!(info.cid == get_cid(state, info.idx)))
             .filter(|&info| hit[&info.elem] < avg)
             .map(|ref info| info.cid)
             .collect::<HashSet<u64>>();
@@ -323,8 +326,7 @@ where
             .values()
             .partition::<Vec<&RotationMeta>, _>(
                 |&info| low_fuzzing_temperature.contains(&info.cid));
-
-        for info in hot {
+        for info in hot.iter() {
             let mut entry = state.corpus().get(info.idx)?.borrow_mut();
             if !entry.has_metadata::<IsFavoredMetadata>() {
                 continue
@@ -333,15 +335,20 @@ where
             assert!(!entry.has_metadata::<IsFavoredMetadata>());
         }
 
+        const FACTOR: usize = 2;
+        // here we choosing ratio in one fuzzing round ( loop over fuzzing queue ) : 
+        //                    |FACTOR * favored| : |others|
+        // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
+
+        if cold.len() > FACTOR * hot.len() {
+            return Ok(())
+        } // ok we can fuzz without prio as seems good ratio anyway
+
         let total = cold.len();
         if 0 == total {
             return Ok(())
         }
 
-        const FACTOR: usize = 2;
-        // here we choosing ratio in one fuzzing round ( loop over fuzzing queue ) : 
-        //                    |FACTOR * favored| : |others|
-        // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
         let spearhead_weight = FACTOR * (100 - self.skip_non_favored_prob as usize);
         let n_hotest = 1 + total * spearhead_weight / 100;
         if n_favored > n_hotest {
