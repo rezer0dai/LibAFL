@@ -28,31 +28,31 @@ where
     /// Add an entry to the corpus and return its index
     fn on_add(&self, state: &mut S, idx: usize) -> Result<(), Error> {
         let current_idx = *state.corpus().current();
-
-        let mut depth = match current_idx {
-            Some(idx) => state
+/*
+        let filename = state
                 .corpus()
                 .get(idx)?
+                .borrow()
+                .filename()
+                .clone();
+*/
+        let mut depth = match current_idx {
+            Some(parent_idx) => if let Some(data) = state
+                .corpus()
+                .get(parent_idx)?
                 .borrow_mut()
                 .metadata_mut()
-                .get_mut::<PowerScheduleTestcaseMetaData>()
-                .ok_or_else(|| Error::KeyNotFound("#1 PowerScheduleTestData not found".to_string()))?
+                .get_mut::<PowerScheduleTestcaseMetaData>() 
+/*
+                .ok_or_else(|| Error::KeyNotFound(
+                        format!("#1 PowerScheduleTestData not found in corpus#{idx} == {:?}",
+                            if filename.is_some() { filename.unwrap().clone() } else { format!("NO NAME") }))
+                )?
                 .depth(),
+*/
+                { data.depth() } else { 0 }, //not sure if this is worth to scatter input
             None => 0,
         };
-        /*
-        let mut depth = match current_idx {
-            Some(idx) => if let Some(meta) = state
-                .corpus()
-                .get(idx)?
-                .borrow_mut()
-                .metadata_mut()
-                .get_mut::<PowerScheduleTestcaseMetaData>() {
-                    meta.depth()
-                } else { 0 },
-            None => 0,
-        };
-        */
 
         // Attach a `PowerScheduleTestData` to the queue entry.
         depth += 1;

@@ -358,8 +358,6 @@ where
             res = ExecuteInputResult::BflErrorRepro;
         }
 
-//        let res = if state.corpus().count() > 200 { res } else { ExecuteInputResult::Corpus };
-
         match res {
             ExecuteInputResult::BflErrorRepro | ExecuteInputResult::None => {
                 self.feedback_mut().discard_metadata(state, &input)?;
@@ -374,10 +372,12 @@ where
                 let mut testcase = Testcase::with_executions(input.clone(), *state.executions());
                 self.feedback_mut().append_metadata(state, &mut testcase)?;
                 let idx = state.corpus_mut().add(testcase)?;
-                if let Err(_) = self.scheduler_mut().on_add(state, idx) {
-                    state.corpus_mut().remove(idx)?;
+//                self.scheduler_mut().on_add(state, idx)?;/*
+                if let Err(e) = self.scheduler_mut().on_add(state, idx) {
+                    println!("\n\t\t>>>>> Adding Failed : {e:?}\n");
+                    state.corpus_mut().remove(idx).unwrap();
                     return Ok((ExecuteInputResult::None, None))
-                }
+                }// */
 
                 if send_events {
                     // TODO set None for fast targets
@@ -503,9 +503,8 @@ where
         self.feedback_mut().append_metadata(state, &mut testcase)?;
         let idx = state.corpus_mut().add(testcase)?;
         if let Err(_) = self.scheduler_mut().on_add(state, idx) {
-            state.corpus_mut().remove(idx)?;
-// actually not a new test case, it just redirect now to some known one
-            return Ok(idx) 
+            state.corpus_mut().remove(idx).unwrap();
+            return Ok(idx)
         }
 
         let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {

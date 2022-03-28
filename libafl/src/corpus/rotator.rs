@@ -6,7 +6,7 @@ use crate::{
     corpus::{Corpus, CorpusScheduler, Testcase, IsFavoredMetadata},
     feedbacks::MapIndexesMetadata,
     inputs::{HasBytesVec, Input},
-    state::{HasCorpus, HasMetadata, HasRand},
+    state::{HasCorpus, HasMetadata, HasRand, HasMaxSize},
     Error,
 };
 
@@ -15,26 +15,10 @@ use core::marker::PhantomData;
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
+
 /// Default probability to skip the non-favored values
 pub const DEFAULT_SKIP_NON_FAVORED_PROB: u64 = 95;
-
-/// unique information per input drop
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DropoutInfo {
-    /// corpus idx of input do drop
-    pub idx: usize,
-    /// corpus idx of input to replace with
-    pub tgt: usize,
-    /// corpus id based on hash of input data for input to drop
-    pub cid: u64,
-}
-/// integral structure for rotating of inputs
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DropoutsMetadata {
-    /// ...
-    pub list: Vec<DropoutInfo>,
-}
-crate::impl_serdeany!(DropoutsMetadata);
 
 /// integral structure for rotating of inputs
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,6 +34,10 @@ pub struct RotationMeta {
 pub struct RotatorsMetadata {
     /// map index -> corpus index
     pub map: HashMap<usize, RotationMeta>,
+    /// ...
+    pub hit: BTreeMap<usize, usize>,
+    /// parent for depth estimation
+    parent: usize,
 }
 crate::impl_serdeany!(RotatorsMetadata);
 
@@ -59,6 +47,8 @@ impl RotatorsMetadata {
     pub fn new() -> Self {
         Self {
             map: HashMap::default(),
+            hit: BTreeMap::default(),
+            parent : 0,
         }
     }
 }
@@ -79,9 +69,10 @@ where
     CS: CorpusScheduler<I, S>,
     I: Input,
     M: AsSlice<usize> + SerdeAny + HasRefCnt,
-    S: HasCorpus<I> + HasMetadata,
+    S: HasCorpus<I> + HasMetadata + HasMaxSize,
 {
     base: CS,
+    // hitcount is ok to have per fuzzing instance, no need to share
     skip_non_favored_prob: u64,
     phantom: PhantomData<(I, M, S)>,
 }
@@ -91,12 +82,12 @@ where
     CS: CorpusScheduler<I, S>,
     I: Input + HasBytesVec,
     M: AsSlice<usize> + SerdeAny + HasRefCnt,
-    S: HasCorpus<I> + HasMetadata + HasRand,
+    S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
 {
     /// Add an entry to the corpus and return its index
     fn on_add(&self, state: &mut S, idx: usize) -> Result<(), Error> {
-        self.base.on_add(state, idx)?;
-        self.update_score(state, idx)
+        self.update_score(state, idx)?;
+        self.base.on_add(state, idx)
     }
 
     /// Replaces the testcase at the given idx
@@ -117,18 +108,40 @@ where
     /// Gets the next entry
     fn next(&self, state: &mut S) -> Result<usize, Error> {
         self.cull(state)?;
-        let mut idx = self.base.next(state)?;
-        while {
-            let has = !state
+
+        let idx = loop {
+            let idx = self.base.next(state)?;
+
+            if state // keep corpus minimal w.r.t to active coverage set
+                .metadata()
+                .get::<RotatorsMetadata>().unwrap()
+                .map
+                .values()
+                .find(|&info| idx == info.idx)
+                .is_none() 
+            { 
+                state.corpus_mut().remove(idx).unwrap_or_default(); 
+                continue
+            }
+            
+            if state
                 .corpus()
                 .get(idx)?
                 .borrow()
-                .has_metadata::<IsFavoredMetadata>();
-            has
-        } && state.rand_mut().below(100) < self.skip_non_favored_prob
-        {
-            idx = self.base.next(state)?;
-        }
+                .has_metadata::<IsFavoredMetadata>()
+            { break idx }
+
+            if state.rand_mut().below(100) > self.skip_non_favored_prob {
+                break idx
+            }
+        };
+
+        state
+            .metadata_mut()
+            .get_mut::<RotatorsMetadata>().unwrap()
+            .parent = idx; // keep corpus minimal w.r.t to active coverage set
+println!("--------------> choosen one : #{idx} priority ? {:?}", 
+   state.corpus().get(idx)?.borrow().has_metadata::<IsFavoredMetadata>());
         Ok(idx)
     }
 }
@@ -138,7 +151,7 @@ where
     CS: CorpusScheduler<I, S>,
     I: Input + HasBytesVec,
     M: AsSlice<usize> + SerdeAny + HasRefCnt,
-    S: HasCorpus<I> + HasMetadata + HasRand,
+    S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
 {
     /// Update the `Corpus` score using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
@@ -148,26 +161,8 @@ where
         if state.metadata().get::<RotatorsMetadata>().is_none() {
             state.add_metadata(RotatorsMetadata::new());
         }
-        if state.metadata().get::<DropoutsMetadata>().is_none() {
-            state.add_metadata(DropoutsMetadata { list : vec![] });
-        }
 // idx is not unique identifier once we remove from ondisk, but hash should be
         let cid = get_cid(state, idx);
-// avoid favorizing replaying input which was deemed to drop but was not droped yet
-        if state
-            .metadata()
-            .get::<DropoutsMetadata>()
-            .unwrap()
-            .list
-            .iter()
-            .filter(|&info| cid == info.cid)
-            .nth(0) 
-            .is_some()
-        { // keep it from sadman's parade - spamming disk of doubles inputs
-            return Err(
-                Error::KeyNotFound(format!("Input waiting to drop")))
-        }
-
 // ok lets query metadata aka coverage edge indicies
         let meta = state 
             .corpus()
@@ -178,24 +173,39 @@ where
             .as_slice()
             .to_vec();
 
-// separate novels from potential cadidates for rotation
-        let (dropouts, novels): (Vec<(usize, Option<bool>)>, _) = meta
-            .iter()
-            .map(|elem| if let Some(ref mut info) = state
+        let mut none_or_overfuzzed: Option<bool> = None;
+
+        let (parent, (dropouts, novels)): (usize, (Vec<(usize, Option<bool>)>, _)) = {
+            let rotator = &mut state
                     .metadata_mut()
-                    .get_mut::<RotatorsMetadata>()
-                    .unwrap()
-                    .map
-                    .get_mut(elem)
-                {
-                    info.counter += 1;
-                    (elem.clone(), Some(info.counter > 0x42))
-                } else { (elem.clone(), None) })
-            .partition(|(_, info)| info.is_some());
+                    .get_mut::<RotatorsMetadata>().unwrap();
+            (rotator.parent, meta
+                .iter()
+// for base hitcounts
+                .inspect(|&elem| {
+                    if !rotator.hit.contains_key(elem) {
+                        rotator.hit.insert(elem.clone(), 0);
+                    }
+                    // count *global* edge hitcount
+                    *rotator.hit.get_mut(elem).unwrap() += 1
+                })
+// separate novels from potential cadidates for rotation
+                .map(|elem| if let Some(ref mut info) = rotator
+                        .map
+                        .get_mut(elem)
+                    {
+                        info.counter += 1; // count *current input* edge hitcount
+                        if idx == info.idx && !none_or_overfuzzed.unwrap_or(false) {
+                            none_or_overfuzzed.replace(info.counter > 66);
+                        } // prohibit to self-remmove
+                        (elem.clone(), Some(info.counter > 0x42))
+                    } else { (elem.clone(), None) })
+                .partition(|(_, info)| info.is_some()))
+        };
 
         let mut new_favoreds = vec![];
 
-        let mut dropouts = dropouts
+        dropouts
             .iter()
             // check if fuzzed enough cycles, if so then rotate
             .filter(|&(_, fuzzed_enough)| fuzzed_enough.unwrap())
@@ -207,8 +217,6 @@ where
                     .get(&elem).unwrap())
             // avoid self pointers
             .filter(|info| info.cid != cid)
-            // just in case input was cleared and we are not able to get hash anymore
-            .inspect(|info| assert!(info.idx != idx))//.filter(|info| info.idx != idx)//
             // ok here we collect unique-ones which are ok to ROTATE
             .inspect(|info| new_favoreds.push((info.elem, None)))
             // and collect all whose are fully expandalble by now
@@ -219,20 +227,31 @@ where
                     .metadata_mut()
                     .get_mut::<M>() 
                 {
+                    assert!(old_meta.refcnt() >= 1);
                     *old_meta.refcnt_mut() -= 1;
-                    assert!(old_meta.refcnt() >= 0);
                     0 == old_meta.refcnt()
                 } else { false })
-            .map(|info| DropoutInfo{ idx:info.idx, tgt:idx, cid:info.cid })
-            .collect::<Vec<DropoutInfo>>();
+            .map(|info| info.idx)
+            // avoid removing parent at recursive banana stacked fuzzing
+            .filter(|&idx| idx != parent)
+            .collect::<Vec<usize>>()
+            .iter()
+            .for_each(|&old_idx| {
+                state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
+                state.corpus_mut().remove(old_idx).unwrap();
+            });
+// one problem with depth + powersched + bananafzz :
+//   - it will not count depth when stacking inputs
+//   - as depth is calculated from parent
+//   - but actually, stacked fuzzing imply that new input this way is no hard to get
+//     + aka without little change without feeedback needed
+//   - more like siblings / cousins, not like offsprings
+//   - therefore depth to stay still in recursive stacking of input, w/o feedback, is ..
+//     very OKish .. i think :)
 
 // if nothing to contribute ( nove, or exchange in rotation ) then signal to remove from corpus
-        if new_favoreds.is_empty() && novels.is_empty() {
-            println!("DROPING INPUT!! -> we got better : {:?} <{:?}>", meta.len(),
-                state.corpus().get(idx).unwrap().borrow().filename().as_ref().unwrap());
-            return Err(
-                Error::KeyNotFound(format!("DROPING: non-( or way T00 MUCHO) interesting input ({})",
-                    state.corpus().get(idx).unwrap().borrow().filename().as_ref().unwrap())));
+        if none_or_overfuzzed.unwrap_or(true) && new_favoreds.is_empty() && novels.is_empty() {
+            return state.corpus_mut().remove(idx).map(|_| ())
         }
 
 // keep count of inputs relevancy in fuzzing rotation
@@ -254,57 +273,122 @@ where
 // register our top_rateds
         novels.iter().chain(new_favoreds.iter())
             .for_each(|&(elem, _)| {
+                let counter = self.base_hitcount(state, elem);
                 state
                     .metadata_mut()
                     .get_mut::<RotatorsMetadata>().unwrap()
                     .map
-                    .insert(elem, RotationMeta{ idx: idx, counter: 0, cid: cid, elem: elem });
+                    .insert(elem, RotationMeta{
+                        idx: idx, 
+                        counter: counter,
+                        cid: cid, 
+                        elem: elem });
             });
-// register what to drop
-        state
-            .metadata_mut()
-            .get_mut::<DropoutsMetadata>()
-            .unwrap()
-            .list
-            .append(&mut dropouts);
-
         return Ok(())
     }
 
     /// Cull the `Corpus` using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
     pub fn cull(&self, state: &mut S) -> Result<(), Error> {
+        let max = state.max_size() as u64;
+        let seed = state.rand_mut().below(max) as usize;
+
         let top_rated = if let Some(tops) = state.metadata().get::<RotatorsMetadata>() 
             { tops } else { return Ok(()) };
 
-        let need_more = top_rated.map
+        let hit = &state
+            .metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .hit;
+        let avg = hit.values().sum::<usize>() / hit.len();
+
+        if avg < 0x42 {
+            return Ok(())
+        }
+
+        let mut n_favored = 0;
+        let low_fuzzing_temperature = top_rated.map
             .values()
-            .filter(|&info| info.counter < 66)
+            .inspect(|&info| if state
+                .corpus()
+                .get(info.idx).unwrap()
+                .borrow_mut()
+                .has_metadata::<IsFavoredMetadata>() 
+            { n_favored += 1 })
+            .filter(|&info| hit[&info.elem] < avg)
             .map(|ref info| info.cid)
             .collect::<HashSet<u64>>();
-
-        for info in top_rated.map
+        // keep it balanced
+        let (cold, hot) = top_rated.map
             .values()
-            .filter(|&info| !need_more.contains(&info.cid))
-        {
+            .partition::<Vec<&RotationMeta>, _>(
+                |&info| low_fuzzing_temperature.contains(&info.cid));
+
+        for info in hot {
             let mut entry = state.corpus().get(info.idx)?.borrow_mut();
-
-            assert!(entry.metadata().get::<M>().is_some(),
-                //by definition meta is there until last reference is droped
-                //otherwise any reference to some original which must have meta!!
-                //also we dont drop meta manually!! - but should not matter anyway
-                "ENTRY MUST HAVE EDGE INFO, as those should be droped only at dtor");
-
             if !entry.has_metadata::<IsFavoredMetadata>() {
                 continue
             }
+            entry.metadata_mut().remove::<IsFavoredMetadata>().unwrap();
+            assert!(!entry.has_metadata::<IsFavoredMetadata>());
+        }
 
-            drop(// ok here i just follow pattern, not sure why need do explicitelly drop ?
-                entry.metadata_mut().remove::<IsFavoredMetadata>()
-            );
+        let total = cold.len();
+        if 0 == total {
+            return Ok(())
+        }
+
+        const FACTOR: usize = 2;
+        // here we choosing ratio in one fuzzing round ( loop over fuzzing queue ) : 
+        //                    |FACTOR * favored| : |others|
+        // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
+        let spearhead_weight = FACTOR * (100 - self.skip_non_favored_prob as usize);
+        let n_hotest = 1 + total * spearhead_weight / 100;
+        if n_favored > n_hotest {
+            return Ok(())
+        }
+
+        // spearhead to go breaktrough, avoid too much wide search
+        for info in cold
+            .iter()
+            .cycle()
+            .skip(seed % total)
+            .step_by(1 + total / n_hotest)
+            .enumerate()
+            .take_while(|&(i, _)| i < n_hotest)
+            .map(|(_, &info)| info)
+        {
+            let mut entry = state.corpus().get(info.idx)?.borrow_mut();
+            if entry.has_metadata::<IsFavoredMetadata>() {
+                continue
+            }
+            entry.add_metadata(IsFavoredMetadata {});
         }
 
         Ok(())
+    }
+
+    /// hitcount based probability
+    #[allow(clippy::unused_self)]
+    pub fn base_hitcount(&self, state: &mut S, ind: usize) -> usize {
+        let hit = &state
+            .metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .hit;
+
+        if hit[&ind] < 66 {
+            return 0x42
+        }
+
+        let max = hit.values().max().unwrap().clone() as f64;
+        let sum = hit.values().sum::<usize>() as f64;
+
+        let max_prob = max * 100.0 / sum;
+        let ind_prob = hit[&ind] as f64 * 100.0 / sum;
+
+        let prob = 1.0 - ind_prob / max_prob;
+
+        66 - (24 + state.rand_mut().below((prob * (0x42 - 24) as f64) as u64) as usize)
     }
 
     /// Creates a new [`RotatingCorpusScheduler`] that wraps a `base` [`CorpusScheduler`]

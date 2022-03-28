@@ -170,9 +170,9 @@ where
         }
 
         let testcase = Testcase::<I>::default();
-
         self.prepare_drop(idx);
         self.update_hotest(idx);
+
         self.redirect.insert(idx, self.hotest);
         let entry = self.entries[idx].replace(testcase);
         if let Some(ref path) = entry.filename() {
@@ -185,7 +185,7 @@ where
     /// Get by id
     #[inline]
     fn get(&self, idx: usize) -> Result<&RefCell<Testcase<I>>, Error> {
-        Ok(&self.entries[self.dest(idx)])
+        Ok(&self.entries[self.dest(idx % self.entries.len())])
     }
 
     /// Current testcase scheduled
