@@ -144,10 +144,6 @@ where
                     .round += 1;
             }
 
-            if self.safe_remove(state, idx).is_ok() {
-                continue
-            }
-
             if ignore_favorites
                 && state.metadata()
                     .get::<RotatorsMetadata>().unwrap()
@@ -157,6 +153,9 @@ where
                     .is_some() 
             { break idx }
 
+            if self.safe_remove(state, idx).is_ok() {
+                continue
+            }
 
             if state.corpus()
                 .get(idx)?
