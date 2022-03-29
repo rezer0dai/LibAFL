@@ -1,5 +1,4 @@
 //! The Minimizer schedulers are a family of corpus schedulers that feed the fuzzer
-// with testcases only from a subset of the total corpus.
 
 use crate::{
     bolts::{rands::Rand, serdeany::SerdeAny, AsSlice, HasRefCnt},
@@ -21,12 +20,13 @@ use std::collections::BTreeMap;
 pub const DEFAULT_SKIP_NON_FAVORED_PROB: u64 = 95;
 
 /// integral structure for rotating of inputs
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RotationMeta {
     idx: usize,
     counter: usize,
     cid: u64,
     elem: usize,
+    hitcount: usize,
 }
 
 /// A state metadata holding a map of favoreds testcases for each map entry
@@ -36,6 +36,8 @@ pub struct RotatorsMetadata {
     pub map: HashMap<usize, RotationMeta>,
     /// ...
     pub hit: BTreeMap<usize, usize>,
+    /// avoid situation that we place to map input and it will never repro again that edge
+    cache: HashMap<usize, RotationMeta>,
     /// parent for depth estimation
     parent: usize,
 }
@@ -48,6 +50,7 @@ impl RotatorsMetadata {
         Self {
             map: HashMap::default(),
             hit: BTreeMap::default(),
+            cache: HashMap::default(),
             parent : 0,
         }
     }
@@ -86,7 +89,7 @@ where
 {
     /// Add an entry to the corpus and return its index
     fn on_add(&self, state: &mut S, idx: usize) -> Result<(), Error> {
-        self.update_score(state, idx)?;
+        self.update_score(state, idx);
         self.base.on_add(state, idx)
     }
 
@@ -107,23 +110,16 @@ where
 
     /// Gets the next entry
     fn next(&self, state: &mut S) -> Result<usize, Error> {
-        self.cull(state)?;
+        self.fix_map(state);
+        self.cull(state);
 
         let idx = loop {
             let idx = self.base.next(state)?;
 
-            if state // keep corpus minimal w.r.t to active coverage set
-                .metadata()
-                .get::<RotatorsMetadata>().unwrap()
-                .map
-                .values()
-                .find(|&info| idx == info.idx)
-                .is_none() 
-            { 
-                state.corpus_mut().remove(idx).unwrap_or_default(); 
+            if self.safe_remove(state, idx) {
                 continue
             }
-            
+
             if state
                 .corpus()
                 .get(idx)?
@@ -158,7 +154,7 @@ where
     /// Update the `Corpus` score using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
     #[allow(clippy::cast_possible_wrap)]
-    pub fn update_score(&self, state: &mut S, idx: usize) -> Result<(), Error> {
+    pub fn update_score(&self, state: &mut S, idx: usize) {
         // Create a new top rated meta if not existing
         if state.metadata().get::<RotatorsMetadata>().is_none() {
             state.add_metadata(RotatorsMetadata::new());
@@ -207,7 +203,7 @@ where
 
         let mut new_favoreds = vec![];
 
-        dropouts
+        let dropouts = dropouts
             .iter()
             // check if fuzzed enough cycles, if so then rotate
             .filter(|&(_, fuzzed_enough)| fuzzed_enough.unwrap())
@@ -224,24 +220,18 @@ where
             // and collect all whose are fully expandalble by now
             .filter(|info| if let Some(ref mut old_meta) = state 
                     .corpus()
-                    .get(info.idx).unwrap()
-                    .borrow_mut()
-                    .metadata_mut()
-                    .get_mut::<M>() 
+                    .get(info.idx).unwrap().borrow_mut()
+                    .metadata_mut().get_mut::<M>() 
                 {
                     assert!(old_meta.refcnt() >= 1);
                     *old_meta.refcnt_mut() -= 1;
                     0 == old_meta.refcnt()
                 } else { false })
-            .map(|info| info.idx)
             // avoid removing parent at recursive banana stacked fuzzing
-            .filter(|&idx| idx != parent)
-            .collect::<Vec<usize>>()
-            .iter()
-            .for_each(|&old_idx| {
-                state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
-                state.corpus_mut().remove(old_idx).unwrap();
-            });
+            .filter(|info| info.idx != parent)
+            .copied()
+            .collect::<Vec<RotationMeta>>();
+
 // one problem with depth + powersched + bananafzz :
 //   - it will not count depth when stacking inputs
 //   - as depth is calculated from parent
@@ -253,7 +243,7 @@ where
 
 // if nothing to contribute ( nove, or exchange in rotation ) then signal to remove from corpus
         if none_or_overfuzzed.unwrap_or(true) && new_favoreds.is_empty() && novels.is_empty() {
-            return state.corpus_mut().remove(idx).map(|_| ())
+            return state.corpus_mut().remove(idx).map(|_| ()).unwrap()
         }
 
 // keep count of inputs relevancy in fuzzing rotation
@@ -275,7 +265,7 @@ where
 // register our top_rateds
         novels.iter().chain(new_favoreds.iter())
             .for_each(|&(elem, _)| {
-                let counter = self.base_hitcount(state, elem);
+                let (hitcount, counter) = self.base_hitcount(state, elem);
                 state
                     .metadata_mut()
                     .get_mut::<RotatorsMetadata>().unwrap()
@@ -284,19 +274,34 @@ where
                         idx: idx, 
                         counter: counter,
                         cid: cid, 
-                        elem: elem });
+                        elem: elem,
+                        hitcount : hitcount
+                    });
             });
-        return Ok(())
+
+        // ok lets set idx to be choosen at most if taken reference-idx from corpora
+        state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
+        // remove replaced ones
+        for info in dropouts {
+            if let Some(old_info) = state
+                .metadata_mut()
+                .get_mut::<RotatorsMetadata>().unwrap()
+                .cache
+                .insert(info.elem, info)
+            { self.safe_remove(state, old_info.idx); }
+        }
     }
 
     /// Cull the `Corpus` using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
-    pub fn cull(&self, state: &mut S) -> Result<(), Error> {
+    pub fn cull(&self, state: &mut S) {
+        // no need to return error, as we require buffer store all of the past idx, just crossref
+        // them, those must not errored at get anyway!
         let max = state.max_size() as u64;
         let seed = state.rand_mut().below(max) as usize;
 
         let top_rated = if let Some(tops) = state.metadata().get::<RotatorsMetadata>() 
-            { tops } else { return Ok(()) };
+            { tops } else { return };
 
         let hit = &state
             .metadata()
@@ -305,7 +310,7 @@ where
         let avg = hit.values().sum::<usize>() / hit.len();
 
         if avg < 0x42 {
-            return Ok(())
+            return
         }
 
         let mut n_favored = 0;
@@ -317,7 +322,8 @@ where
                 .borrow_mut()
                 .has_metadata::<IsFavoredMetadata>() 
             { n_favored += 1 })
-            .inspect(|&info| assert!(info.cid == get_cid(state, info.idx)))
+//            .inspect(|&info| assert!(info.cid == get_cid(state, info.idx)))
+.inspect(|&info| println!("STATS : avg#{avg} |{info:?}| heat : {:?}", hit[&info.elem]))
             .filter(|&info| hit[&info.elem] < avg)
             .map(|ref info| info.cid)
             .collect::<HashSet<u64>>();
@@ -326,8 +332,12 @@ where
             .values()
             .partition::<Vec<&RotationMeta>, _>(
                 |&info| low_fuzzing_temperature.contains(&info.cid));
+
+println!("\t\t @@@@@@@@@@@@@ (favored#{n_favored} >>> colds#{:?} vs hots#{:?}", cold.len(), hot.len());
+println!("\n *** uniques : {:?}\n", top_rated.map.values().map(|ref info| info.cid).collect::<HashSet<u64>>());
+
         for info in hot.iter() {
-            let mut entry = state.corpus().get(info.idx)?.borrow_mut();
+            let mut entry = state.corpus().get(info.idx).unwrap().borrow_mut();
             if !entry.has_metadata::<IsFavoredMetadata>() {
                 continue
             }
@@ -340,19 +350,19 @@ where
         //                    |FACTOR * favored| : |others|
         // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
 
-        if cold.len() > FACTOR * hot.len() {
-            return Ok(())
+        if cold.len() > FACTOR * hot.len() { // its too cold to choose fav
+            return
         } // ok we can fuzz without prio as seems good ratio anyway
 
         let total = cold.len();
         if 0 == total {
-            return Ok(())
+            return
         }
 
         let spearhead_weight = FACTOR * (100 - self.skip_non_favored_prob as usize);
         let n_hotest = 1 + total * spearhead_weight / 100;
         if n_favored > n_hotest {
-            return Ok(())
+            return
         }
 
         // spearhead to go breaktrough, avoid too much wide search
@@ -365,26 +375,24 @@ where
             .take_while(|&(i, _)| i < n_hotest)
             .map(|(_, &info)| info)
         {
-            let mut entry = state.corpus().get(info.idx)?.borrow_mut();
+            let mut entry = state.corpus().get(info.idx).unwrap().borrow_mut();
             if entry.has_metadata::<IsFavoredMetadata>() {
                 continue
             }
             entry.add_metadata(IsFavoredMetadata {});
         }
-
-        Ok(())
     }
 
     /// hitcount based probability
     #[allow(clippy::unused_self)]
-    pub fn base_hitcount(&self, state: &mut S, ind: usize) -> usize {
+    fn base_hitcount(&self, state: &mut S, ind: usize) -> (usize, usize) {
         let hit = &state
             .metadata()
             .get::<RotatorsMetadata>().unwrap()
             .hit;
 
         if hit[&ind] < 66 {
-            return 0x42
+            return (hit[&ind], 0x42)
         }
 
         let max = hit.values().max().unwrap().clone() as f64;
@@ -395,7 +403,106 @@ where
 
         let prob = 1.0 - ind_prob / max_prob;
 
-        66 - (24 + state.rand_mut().below((prob * (0x42 - 24) as f64) as u64) as usize)
+        (
+            hit[&ind], 
+            66 - (24 + state.rand_mut().below((prob * (0x42 - 24) as f64) as u64) as usize)
+        )
+    }
+
+    fn safe_remove(&self, state: &mut S, idx: usize) -> bool {
+        if state // keep corpus minimal w.r.t to active coverage set
+            .metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .map
+            .values() // though these should be covered by metadata().refcnt() !+ 0
+            .find(|&info| idx == info.idx)
+            .is_some() 
+        { return false }
+
+        if state // include cache !!
+            .metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .cache
+            .values()
+            .find(|&info| idx == info.idx)
+            .is_some() 
+        { return true } // ok pretend to be remove but keep it ( skip in next )
+
+println!("\t\t-------> REMOVE {idx}");
+        state.corpus_mut().remove(idx).unwrap();
+        true
+    }
+    /// checking cache for failing of map replacement
+    #[allow(clippy::unused_self)]
+    fn fix_map(&self, state: &mut S) {
+        for (old_idx, idx) in self.revived_edges(state) {
+            if idx == old_idx {
+                continue
+            }
+
+            *state
+                .corpus()
+                .get(idx).unwrap().borrow_mut()
+                .metadata_mut().get_mut::<M>().unwrap()
+                .refcnt_mut() += 1;
+
+// make it here to add as favorite, will it widen spearhead maybe too much to be effective ?
+            state // as is questionable if we want to do it here
+                .corpus() // or leave it fpr cull
+                .get(idx).unwrap() // problem with cull is when too cold env
+                .borrow_mut() // aka nothing going to be favored
+                .add_metadata(IsFavoredMetadata {}); // so this can take quite time to uptake
+
+            let remove = if let Some(old_meta) = state
+                .corpus()
+                .get(old_idx).unwrap().borrow_mut()
+                .metadata_mut().get_mut::<M>()
+            {
+                *old_meta.refcnt_mut() -= 1;
+                0 == old_meta.refcnt()
+            } else { panic!("not possible to dref metadata of latest entry ??") };
+
+            if !remove {
+                continue
+            }
+
+            state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
+            self.safe_remove(state, old_idx);
+        }
+    }
+    fn revived_edges(&self, state: &mut S) -> Vec<(usize, usize)> {
+        let meta = if let Some(meta) = state.metadata_mut().get_mut::<RotatorsMetadata>() 
+            { meta } else { return vec![] };
+
+        let avg = meta.hit.values().sum::<usize>() / meta.hit.len();
+
+        meta.map
+            .values()
+            .filter(|&info| meta.hit[&info.elem] > 66) // only those once replaced
+            .filter(|&info| meta.hit[&info.elem] < avg / 2) // way below average
+            .filter(|&info| meta.hit[&info.elem] < info.hitcount * 110 / 100) // seems frozen
+            .filter(|&info| meta.cache.get(&info.elem).is_some())
+            .copied() 
+            .collect::<Vec<RotationMeta>>()
+            .iter()
+            .map(|&info| {
+                let old_info = meta.cache.get(&info.elem).unwrap().clone();// load it back
+
+                let info = meta
+                    .map
+                    .insert(info.elem, RotationMeta{
+                        idx: old_info.idx,
+                        counter: 1,
+                        cid: old_info.cid, 
+                        elem: old_info.elem,
+                        hitcount : meta.hit[&info.elem],
+                    }).unwrap();
+
+println!("BACK TO THE FUTURE from #{info:?} instead of {:?}", old_info.idx);
+
+                (info.idx, old_info.idx)
+            })
+            .collect()
     }
 
     /// Creates a new [`RotatingCorpusScheduler`] that wraps a `base` [`CorpusScheduler`]
