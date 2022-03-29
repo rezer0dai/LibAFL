@@ -33,11 +33,13 @@ pub struct RotationMeta {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RotatorsMetadata {
     /// map index -> corpus index
-    pub map: HashMap<usize, RotationMeta>,
+    map: HashMap<usize, RotationMeta>,
     /// ...
-    pub hit: BTreeMap<usize, usize>,
+    hit: BTreeMap<usize, usize>,
     /// avoid situation that we place to map input and it will never repro again that edge
     cache: HashMap<usize, RotationMeta>,
+    /// avoid situation that we place to map input and it will never repro again that edge
+    minmax: HashMap<usize, RotationMeta>,
     /// parent for depth estimation
     parent: usize,
     /// how many next was called
@@ -53,6 +55,7 @@ impl RotatorsMetadata {
             map: HashMap::default(),
             hit: BTreeMap::default(),
             cache: HashMap::default(),
+            minmax: HashMap::default(),
             parent : 0,
             round : 0,
         }
@@ -116,23 +119,44 @@ where
         self.fix_map(state);
         self.cull(state);
 
-        if 0 != state.metadata() // once a while do heat map focus
+        let round = state.metadata() // once a while do heat map focus
             .get::<RotatorsMetadata>().unwrap()
-            .round % 3 // we do equal fuzzing most of the time
-        { self.finish_selection(state) }
+            .round; // we do equal fuzzing most of the time
+        let ignore_favorites = 1 == round % (3 * 2 + 1); // TODO : (magic3 * 2 + 1) to the config
+        if 0 != round % 3 { // TODO : magic3 to the config
+            self.finish_selection(state) 
+        }
+
+        println!("\t\t =====> CURRENT ROUND#{round} minmax|{:?}|", 
+                state.metadata()
+                    .get::<RotatorsMetadata>().unwrap()
+                    .minmax.len()
+            );
 
         self.reset_counters(state);
-
-        state.metadata_mut()
-            .get_mut::<RotatorsMetadata>().unwrap()
-            .round += 1;
 
         let idx = loop {
             let idx = self.base.next(state)?;
 
-            if self.safe_remove(state, idx) {
+            if 0 == idx {
+                state.metadata_mut()
+                    .get_mut::<RotatorsMetadata>().unwrap()
+                    .round += 1;
+            }
+
+            if self.safe_remove(state, idx).is_ok() {
                 continue
             }
+
+            if ignore_favorites
+                && state.metadata()
+                    .get::<RotatorsMetadata>().unwrap()
+                    .minmax
+                    .values()
+                    .find(|&minmax| minmax.idx == idx)
+                    .is_some() 
+            { break idx }
+
 
             if state.corpus()
                 .get(idx)?
@@ -141,7 +165,7 @@ where
             { break idx }
 
             if state.rand_mut().below(100) > self.skip_non_favored_prob {
-                break idx
+                break idx 
             }
         };
 
@@ -274,7 +298,7 @@ where
                 state.metadata_mut()
                     .get_mut::<RotatorsMetadata>().unwrap()
                     .map
-                    .insert(elem, RotationMeta{
+                    .insert(elem, RotationMeta {
                         idx: idx, 
                         counter: counter,
                         cid: cid, 
@@ -283,16 +307,47 @@ where
                     });
             });
 
-        // ok lets set idx to be choosen at most if taken reference-idx from corpora
-        state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
         // remove replaced ones
         for info in dropouts {
-            if let Some(old_info) = state.metadata_mut()
+            let (old, old_info) = if let Some(old_info) = state.metadata_mut()
                 .get_mut::<RotatorsMetadata>().unwrap()
                 .cache
                 .insert(info.elem, info)
-            { self.safe_remove(state, old_info.idx); }
+            { // ok saved to cache, removing from corpus
+                (self.safe_remove(state, old_info.idx), old_info)
+            } else { continue }; // ola seems used by map still ?
+
+            let mut testcase = if let Ok(Some(testcase)) = old {
+                testcase // extracting corpus released data
+            } else { continue }; // nope, data keeped still in corpus (refed by cache[other_idx] or minmax )
+
+            if state.metadata()
+                .get::<RotatorsMetadata>().unwrap()
+                .minmax
+                .values()
+                .find(|&minmax| minmax.cid == old_info.cid)
+                .is_some() 
+            { continue } // need to have unique cid, we build minmax queue
+
+            // put to corpus, without feedback to anybody
+            *testcase.filename_mut() = None;
+            let new_idx = if let Ok(new_idx) = state.corpus_mut().add(testcase) {
+                 new_idx
+            } else { continue }; // uh, not added inside corpus, good as dead this input
+
+            state.metadata_mut()
+                .get_mut::<RotatorsMetadata>().unwrap()
+                .minmax // its ok to replace itself, but only for unique cid !!
+                .insert(old_info.elem, RotationMeta {
+                    idx: new_idx,
+                    counter: old_info.counter,
+                    cid: old_info.cid, 
+                    elem: old_info.elem,
+                    hitcount : old_info.hitcount
+                });
         }
+        // ok lets set idx to be choosen at most if taken reference-idx from corpora
+        state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
     }
 
     /// Cull the `Corpus` using the `RotatingCorpusScheduler`
@@ -346,7 +401,7 @@ println!("\n *** uniques : {:?}\n", top_rated.map.values().map(|ref info| info.c
             assert!(!entry.has_metadata::<IsFavoredMetadata>());
         }
 
-        const FACTOR: usize = 2;
+        const FACTOR: usize = 2; // TODO : magic2 to the config
         // here we choosing ratio in one fuzzing round ( loop over fuzzing queue ) : 
         //                    |FACTOR * favored| : |others|
         // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
@@ -408,27 +463,29 @@ println!("\t\t======>> OK need few more hot #{n_hotest} to the party!! and we go
         )
     }
 
-    fn safe_remove(&self, state: &mut S, idx: usize) -> bool {
+    fn safe_remove(&self, state: &mut S, idx: usize) -> Result<Option<Testcase<I>>, ()> {
+        let meta = if let Some(meta) = state.metadata().get::<RotatorsMetadata>() 
+            { meta } else { return Err(()) };
 // keep corpus minimal w.r.t to active coverage set
-        if state.metadata()
-            .get::<RotatorsMetadata>().unwrap()
-            .map
+        if meta.map
             .values() // though these should be covered by metadata().refcnt() !+ 0
             .find(|&info| idx == info.idx)
             .is_some() 
-        { return false }
+        { return Err(()) }
 
-        if state.metadata() // include cache !!
-            .get::<RotatorsMetadata>().unwrap()
-            .cache
+        if meta.cache
             .values()
             .find(|&info| idx == info.idx)
             .is_some() 
-        { return true } // ok pretend to be remove but keep it ( skip in next )
+        { return Ok(None) } // ok pretend to be remove but keep it ( skip in next )
 
-println!("\t\t-------> REMOVE {idx}");
-        state.corpus_mut().remove(idx).unwrap();
-        true
+        if meta.minmax
+            .values()
+            .find(|&info| idx == info.idx)
+            .is_some() 
+        { return Ok(None) } // ok pretend to be remove but keep it ( skip in next )
+
+        Ok(state.corpus_mut().remove(idx).unwrap())
     }
     /// checking cache for failing of map replacement
     #[allow(clippy::unused_self)]
@@ -463,7 +520,9 @@ println!("\t\t-------> REMOVE {idx}");
             }
 
             state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
-            self.safe_remove(state, old_idx);
+            drop( // ok seems nice way to handle unused warning
+                self.safe_remove(state, old_idx).unwrap_or(None)
+            );
         }
     }
     fn revived_edges(&self, state: &mut S) -> Vec<(usize, usize)> {
@@ -544,6 +603,7 @@ println!("BACK TO THE FUTURE from #{info:?} instead of {:?}", old_info.idx);
 
             entry.add_metadata(IsFavoredMetadata {});
         }
+println!("\n\t\t--> FAVORING : {:?}\n", acc.len());
     }
 
     /// reset hitcounts to not reflect past too muuch, to not overdo with new samples

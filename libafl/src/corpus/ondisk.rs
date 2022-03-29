@@ -152,13 +152,16 @@ where
 
         if testcase.input().is_some() {
             // seems somebody wants to do really replace, OK go for it
+            self.redirect.remove(&idx);
+            // need to fix all references to idx, not just self.redirect ...
             self.entries[dest].replace(testcase);
             // though we will keep the hotest
+            panic!("REPLACE IS NOT CORRECTLY IMPLEMENTED YET, COULD HAVE CROSS-REF ISSUES")
         } else {
             // ok request to just update at idx position with original
-            self.update_head_at(idx, dest, testcase)
+            self.update_head_at(idx, dest, testcase);
+            self.hotest = idx;
         }
-        self.hotest = idx;
         return Ok(())
     }
 
@@ -174,11 +177,19 @@ where
         self.update_hotest(idx);
 
         self.redirect.insert(idx, self.hotest);
-        let entry = self.entries[idx].replace(testcase);
+        let mut entry = self.entries[idx].replace(testcase);
+        if entry.filename().is_none() { // empty testcase perhaps ?
+            return Ok(None)
+        }
+        if let Err(_) = entry.load_input() { // load it to memory
+            return Ok(None)
+        }
+        // no we can try to remove from FS 
         if let Some(ref path) = entry.filename() {
             fs::remove_file(path)?;
             fs::remove_file(format!("{}.lafl_lock", path))?;
         }
+        // can be still recovered with this
         Ok(Some(entry))
     }
 
