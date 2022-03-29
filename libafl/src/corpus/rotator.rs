@@ -351,7 +351,7 @@ println!("\n *** uniques : {:?}\n", top_rated.map.values().map(|ref info| info.c
         //                    |FACTOR * favored| : |others|
         // as (100 - skip_non_favored_prob) will do it 1:1 ( even if favored are 1000x less )
 
-        if cold.len() > FACTOR * hot.len() { // its too cold to choose fav
+        if 0 == cold.len() || cold.len() > FACTOR * hot.len() { // its too cold to choose fav
             return
         } // ok we can fuzz without prio as seems good ratio anyway
 
