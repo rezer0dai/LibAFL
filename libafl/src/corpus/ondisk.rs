@@ -189,6 +189,7 @@ where
             fs::remove_file(path)?;
             fs::remove_file(format!("{}.lafl_lock", path))?;
         }
+        *entry.filename_mut() = None; // file already deleted!!
         // can be still recovered with this
         Ok(Some(entry))
     }
