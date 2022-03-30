@@ -391,8 +391,8 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
                 testcase // extracting corpus released data
             } else { continue }; // nope, data keeped still in corpus (refed by cache[other_idx] or minmax )
 
-            // ok we will drop this once comming to minmax
-            testcase.metadata_mut().remove::<IsFavoredMetadata>().unwrap();
+            drop( // ok we will drop this once comming to minmax
+                testcase.metadata_mut().remove::<IsFavoredMetadata>().unwrap());
 
             // again point of minmax is DIVERSITY
             if state.metadata()
