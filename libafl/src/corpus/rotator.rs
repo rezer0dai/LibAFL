@@ -27,6 +27,7 @@ pub struct RotationMeta {
     cid: u64,
     elem: usize,
     hitcount: usize,
+    round: usize,
 }
 
 /// A state metadata holding a map of favoreds testcases for each map entry
@@ -38,12 +39,15 @@ pub struct RotatorsMetadata {
     hit: BTreeMap<usize, usize>,
     /// avoid situation that we place to map input and it will never repro again that edge
     cache: HashMap<usize, RotationMeta>,
-    /// avoid situation that we place to map input and it will never repro again that edge
+    /// avoid situation where 1 or just few inputs cover all known edges so far - bad for crossover
     minmax: HashMap<usize, RotationMeta>,
     /// parent for depth estimation
     parent: usize,
     /// how many next was called
     round: usize,
+    /// when is round for minmax does not replace, just add uniques!! otherwise infinite expansion
+    /// of corpus going to happen
+    block_dups: bool,
 }
 crate::impl_serdeany!(RotatorsMetadata);
 
@@ -58,6 +62,7 @@ impl RotatorsMetadata {
             minmax: HashMap::default(),
             parent : 0,
             round : 0,
+            block_dups : false,
         }
     }
 }
@@ -119,15 +124,20 @@ where
         self.fix_map(state);
         self.cull(state);
 
-        let round = state.metadata() // once a while do heat map focus
+        let mut round = state.metadata() // once a while do heat map focus
             .get::<RotatorsMetadata>().unwrap()
             .round; // we do equal fuzzing most of the time
-        let ignore_favorites = 1 == round % (3 * 2 + 1); // TODO : (magic3 * 2 + 1) to the config
+        let ignore_favorites = 2 == round % (3 * 2 + 1); // TODO : (magic3 * 2 + 1) to the config
         if 0 != round % 3 { // TODO : magic3 to the config
             self.finish_selection(state) 
         }
+        
+        state.metadata_mut()
+            .get_mut::<RotatorsMetadata>().unwrap()
+            .block_dups = ignore_favorites;
 
-        println!("\t\t =====> CURRENT ROUND#{round} minmax|{:?}|", 
+        println!("\t\t =====> CURRENT ROUND#{round} [{:?}] minmax|{:?}|", 
+                state.corpus().current(),
                 state.metadata()
                     .get::<RotatorsMetadata>().unwrap()
                     .minmax.len()
@@ -139,6 +149,7 @@ where
             let idx = self.base.next(state)?;
 
             if 0 == idx {
+                round += 1;
                 state.metadata_mut()
                     .get_mut::<RotatorsMetadata>().unwrap()
                     .round += 1;
@@ -149,13 +160,20 @@ where
                     .get::<RotatorsMetadata>().unwrap()
                     .minmax
                     .values()
-                    .find(|&minmax| minmax.idx == idx)
+                    .find(|&minmax| minmax.idx == idx 
+                        && minmax.round != round) // quadratic expansion otherwise
                     .is_some() 
             { break idx }
 
             if self.safe_remove(state, idx).is_ok() {
                 continue
             }
+
+            if state.metadata()
+                .get::<RotatorsMetadata>().unwrap()
+                .map
+                .get(&idx).map_or(false, |info| round == info.round)
+            { continue } // avoid replaying same multiple referenced input
 
             if state.corpus()
                 .get(idx)?
@@ -207,10 +225,10 @@ where
 
         let mut none_or_overfuzzed: Option<bool> = None;
 
-        let (parent, (dropouts, novels)): (usize, (Vec<(usize, Option<bool>)>, _)) = {
+        let ((parent, round), (dropouts, novels)): (_, (Vec<(usize, Option<bool>)>, _)) = {
             let rotator = &mut state.metadata_mut()
                     .get_mut::<RotatorsMetadata>().unwrap();
-            (rotator.parent, meta
+            ((rotator.parent, rotator.round), meta
                 .iter()
 // for base hitcounts
                 .inspect(|&elem| {
@@ -224,6 +242,7 @@ where
                 .map(|elem| if let Some(ref mut info) = rotator.map
                         .get_mut(elem)
                     {
+                        info.round = rotator.round;
                         info.counter += 1; // count *current input* edge hitcount
                         if idx == info.idx && !none_or_overfuzzed.unwrap_or(false) {
                             none_or_overfuzzed.replace(info.counter > 66);
@@ -302,9 +321,14 @@ where
                         counter: counter,
                         cid: cid, 
                         elem: elem,
-                        hitcount : hitcount
+                        hitcount : hitcount,
+                        round : round,
                     });
             });
+
+        let block_dups = state.metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .block_dups;
 
         // remove replaced ones
         for info in dropouts {
@@ -324,17 +348,18 @@ where
                 .get::<RotatorsMetadata>().unwrap()
                 .minmax
                 .values()
-                .find(|&minmax| minmax.cid == old_info.cid)
+                .find(|&minmax| minmax.cid == old_info.cid 
+                    || (block_dups && minmax.elem == old_info.elem))
                 .is_some() 
             { continue } // need to have unique cid, we build minmax queue
 
+            *testcase.filename_mut() = None; // file already deleted!!
             // put to corpus, without feedback to anybody
-            *testcase.filename_mut() = None;
             let new_idx = if let Ok(new_idx) = state.corpus_mut().add(testcase) {
                  new_idx
             } else { continue }; // uh, not added inside corpus, good as dead this input
 
-            state.metadata_mut()
+            if let Some(old_mm_info) = state.metadata_mut()
                 .get_mut::<RotatorsMetadata>().unwrap()
                 .minmax // its ok to replace itself, but only for unique cid !!
                 .insert(old_info.elem, RotationMeta {
@@ -342,8 +367,10 @@ where
                     counter: old_info.counter,
                     cid: old_info.cid, 
                     elem: old_info.elem,
-                    hitcount : old_info.hitcount
-                });
+                    hitcount : old_info.hitcount,
+                    round : round,
+                })
+            { self.safe_remove(state, old_mm_info.idx).unwrap_or(None); }
         }
         // ok lets set idx to be choosen at most if taken reference-idx from corpora
         state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
@@ -549,6 +576,7 @@ println!("\t\t======>> OK need few more hot #{n_hotest} to the party!! and we go
                         cid: old_info.cid, 
                         elem: old_info.elem,
                         hitcount : meta.hit[&info.elem],
+                        round : old_info.round,
                     }).unwrap();
 
 println!("BACK TO THE FUTURE from #{info:?} instead of {:?}", old_info.idx);
