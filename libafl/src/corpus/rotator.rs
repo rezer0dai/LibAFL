@@ -392,7 +392,7 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
             } else { continue }; // nope, data keeped still in corpus (refed by cache[other_idx] or minmax )
 
             drop( // ok we will drop this once comming to minmax
-                testcase.metadata_mut().remove::<IsFavoredMetadata>().unwrap());
+                testcase.metadata_mut().remove::<IsFavoredMetadata>());
 
             // again point of minmax is DIVERSITY
             if state.metadata()
@@ -471,7 +471,9 @@ println!("\t\t @@@@@@@@@@@@@ (favored#{n_favored} >>> colds#{:?} vs hots#{:?}", 
 println!("\n *** uniques : {:?}\n", top_rated.map.values().map(|ref info| info.cid).collect::<HashSet<u64>>());
 
         for info in hot.iter() {
-            assert!(info.hitcount >= 0x42);
+            if info.hitcount < 0x42 {
+                continue // how this would happen imho 
+            }
             let mut entry = state.corpus().get(info.idx).unwrap().borrow_mut();
             if !entry.has_metadata::<IsFavoredMetadata>() {
                 continue
