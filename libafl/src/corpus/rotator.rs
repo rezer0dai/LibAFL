@@ -356,7 +356,7 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
 // TODO : refactor this, as whole block is like another LOGIC for other type
 // Corpus -> Minimuzer -> ?*this*? -> Scheduler
         // remove replaced ones
-        for info in dropouts
+        for &info in dropouts
             .iter()
             .rev() { // ok we want to get registered feedback chain from the end ( max cov )
             // try to keep cache diverse enough
