@@ -121,48 +121,54 @@ where
 
 /// Gets the next entry
     fn next(&self, state: &mut S) -> Result<usize, Error> {
-        self.apply_heatmap(state);
-        self.restore_broken(state);
-
-        let mut round = state.metadata() // once a while do heat map focus
+        let mut ignore_favorites = state.metadata()
             .get::<RotatorsMetadata>().unwrap()
-            .round; // we do equal fuzzing most of the time
-        let mut ignore_favorites = 2 == round % (3 * 2 + 1); // TODO : (magic3 * 2 + 1) to the config
-        if 0 != round % 3 { // TODO : magic3 to the config
-            self.approximate_min_cover(state) 
-        }
-        
-        state.metadata_mut()
-            .get_mut::<RotatorsMetadata>().unwrap()
-            .block_dups = ignore_favorites;
+            .block_dups;
 
-        self.reset_counters(state);
+        let mut round = state.metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .round;
+
+self.debug(state);
+println!("\t\t =====> CURRENT ROUND#{round} no-favs?{ignore_favorites} [{:?}] minmax|{:?}|, cache-uniq|{:?}|", 
+    state.corpus().current(),
+    state.metadata()
+        .get::<RotatorsMetadata>().unwrap()
+        .minmax.len(),
+    state.metadata()
+        .get::<RotatorsMetadata>().unwrap()
+        .cache
+        .values()
+        .map(|info| info.cid)
+        .collect::<HashSet<u64>>()
+        .len()
+);
 
         let idx = loop {
             let idx = self.base.next(state)?;
 
             if 0 == idx {
-                round += 1;
-                ignore_favorites = 2 == round % (3 * 2 + 1);
-                state.metadata_mut()
-                    .get_mut::<RotatorsMetadata>().unwrap()
-                    .round += 1;
+                (ignore_favorites, round) = self.on_next_round(state)
+            }
+
+            if ignore_favorites {
+                // go only for mixmax queue
+                if state.metadata()
+                    .get::<RotatorsMetadata>().unwrap()
+                    .minmax
+                    .values()
+                    .find(|&minmax| minmax.idx == idx 
+                        && minmax.round != round)
+                    .is_some() 
+                { // ok waited enough to replay it
+                    break idx 
+                } else { continue } // skiping newly created for another round
             }
 
             if state.corpus()
                 .get(idx)?
                 .borrow()
                 .has_metadata::<IsFavoredMetadata>()
-            { break idx }
-
-            if ignore_favorites
-                && state.metadata()
-                    .get::<RotatorsMetadata>().unwrap()
-                    .minmax
-                    .values()
-                    .find(|&minmax| minmax.idx == idx 
-                        && minmax.round != round) // quadratic expansion otherwise
-                    .is_some() 
             { break idx }
 
             if self.safe_remove(state, idx).is_ok() {
@@ -184,34 +190,20 @@ where
             .get_mut::<RotatorsMetadata>().unwrap()
             .parent = idx; // keep corpus minimal w.r.t to active coverage set
 
-        // ok when favorized as parent one of minmax corpus
-        state.corpus_mut() // then we need to strip it once a while
+println!("--------------> choosen one : #{idx} priority ? {:?}", 
+    state.corpus().get(idx)?.borrow().has_metadata::<IsFavoredMetadata>());
+
+        drop( // ok when favorized as parent one of minmax corpus
+            state.corpus_mut() // then we need to strip it once a while
             .get(idx)? // as no else will do it
             .borrow_mut() // afterall if it so good, will be favorized again
             .metadata_mut() // and if not, it is good anyway
-            .remove::<IsFavoredMetadata>().unwrap();
+            .remove::<IsFavoredMetadata>());
         // we favorized parents, because we want to force diverse input if it makes sense
         // and minmax will go replayed only once upon time
         // so we need to pick some of them to replay everytime if they are good
         // but same time, we need be able to drop them from main queue 
         // if deemed not so good anymore
-
-println!("\t\t =====> CURRENT ROUND#{round} no-favs?{ignore_favorites} [{:?}] minmax|{:?}|, cache-uniq|{:?}|", 
-    state.corpus().current(),
-    state.metadata()
-        .get::<RotatorsMetadata>().unwrap()
-        .minmax.len(),
-    state.metadata()
-        .get::<RotatorsMetadata>().unwrap()
-        .cache
-        .values()
-        .map(|info| info.cid)
-        .collect::<HashSet<u64>>()
-        .len()
-);
-
-println!("--------------> choosen one : #{idx} priority ? {:?}", 
-    state.corpus().get(idx)?.borrow().has_metadata::<IsFavoredMetadata>());
 
         Ok(idx)
     }
@@ -364,7 +356,9 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
 // TODO : refactor this, as whole block is like another LOGIC for other type
 // Corpus -> Minimuzer -> ?*this*? -> Scheduler
         // remove replaced ones
-        for info in dropouts {
+        for info in dropouts
+            .iter()
+            .rev() { // ok we want to get registered feedback chain from the end ( max cov )
             // try to keep cache diverse enough
             if state.metadata() // ok lets check if cache have this entry
                 .get::<RotatorsMetadata>().unwrap()
@@ -428,6 +422,28 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
         state.corpus_mut().replace(idx, Testcase::<I>::default()).unwrap();
     }
 
+    fn debug(&self, state: &S) {
+        let top_rated = if let Some(tops) = state.metadata().get::<RotatorsMetadata>() 
+            { tops } else { return };
+
+        let hit = &state.metadata()
+            .get::<RotatorsMetadata>().unwrap()
+            .hit;
+        let avg = hit.values().sum::<usize>() / hit.len();
+
+        if avg < 0x42 {
+            return
+        }
+
+        for info in top_rated.map.values() {
+            println!("STATS : avg#{avg} |{info:?}| heat : {:?} ; favored ? {:?}", hit[&info.elem],
+                state.corpus()
+                    .get(info.idx).unwrap()
+                    .borrow_mut()
+                    .has_metadata::<IsFavoredMetadata>());
+        }
+    }
+
     /// Cull the `Corpus` using the `RotatingCorpusScheduler`
     #[allow(clippy::unused_self)]
     pub fn apply_heatmap(&self, state: &mut S) {
@@ -456,8 +472,6 @@ S: HasCorpus<I> + HasMetadata + HasRand + HasMaxSize,
                 .borrow_mut()
                 .has_metadata::<IsFavoredMetadata>() 
             { n_favored += 1 })
-//            .inspect(|&info| assert!(info.cid == self.get_cid(state, info.idx)))
-.inspect(|&info| println!("STATS : avg#{avg} |{info:?}| heat : {:?}", hit[&info.elem]))
             .filter(|info| hit[&info.elem] < avg)
             .map(|info| info.cid)
             .collect::<HashSet<u64>>();
@@ -710,6 +724,36 @@ println!("\n\t\t--> FAVORING : {:?}\n", acc.len());
             .filter(|&(_, &mut hitcount)| hitcount > 0x42)
             .for_each(|(_, hitcount)| *hitcount = 1 + 66);
     }
+
+    fn on_next_round(&self, state: &mut S) -> (bool, usize) {
+        self.apply_heatmap(state);
+        self.restore_broken(state);
+
+        state.metadata_mut()
+            .get_mut::<RotatorsMetadata>().unwrap()
+            .round += 1;
+        let round = state.metadata() // once a while do heat map focus
+            .get::<RotatorsMetadata>().unwrap()
+            .round; // we do equal fuzzing most of the time
+
+        const MINMAX_STEP: usize = 2;
+        const HEAT_STEP: usize = 3;
+
+        let ignore_favorites = 1 == round % (HEAT_STEP * MINMAX_STEP + 1); // TODO : (magic3 * 2 + 1) to the config
+
+        if 0 != round % HEAT_STEP { // TODO : magic3 to the config
+            self.approximate_min_cover(state) 
+        }
+
+        self.reset_counters(state);
+
+        state.metadata_mut()
+            .get_mut::<RotatorsMetadata>().unwrap()
+            .block_dups = ignore_favorites;
+
+        (ignore_favorites, round)
+    }
+
 /*
     fn get_cid(&self, state: &S, idx: usize) -> u64 
     where
