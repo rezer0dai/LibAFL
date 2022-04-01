@@ -736,12 +736,12 @@ println!("\n\t\t--> FAVORING : {:?}\n", acc.len());
             .get::<RotatorsMetadata>().unwrap()
             .round; // we do equal fuzzing most of the time
 
-        const MINMAX_STEP: usize = 2;
-        const HEAT_STEP: usize = 3;
+        const MINMAX_STEP: usize = 1;//2;
+        const HEAT_STEP: usize = 4; // it is fuzzing min-1:max-1:heat-(HEAT_STEP - 2)
 
         let ignore_favorites = 1 == round % (HEAT_STEP * MINMAX_STEP + 1); // TODO : (magic3 * 2 + 1) to the config
 
-        if 0 != round % HEAT_STEP { // TODO : magic3 to the config
+        if 0 == round % HEAT_STEP { // TODO : magic3 to the config
             self.approximate_min_cover(state) 
         }
 
