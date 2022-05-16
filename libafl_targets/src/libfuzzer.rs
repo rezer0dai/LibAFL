@@ -10,9 +10,10 @@ extern "C" {
     fn libafl_targets_libfuzzer_init(argc: *const i32, argv: *const *const *const u8) -> i32;
 }
 */
-use bananafzz::{//libafl_targets_libfuzzer_init;//
-    LLVMFuzzerTestOneInput,
+use soly::{
     libafl_targets_libfuzzer_init,
+    //libafl_targets_libfuzzer_init;//
+    LLVMFuzzerTestOneInput,
 };
 
 /// Calls the (native) libfuzzer initialize function.

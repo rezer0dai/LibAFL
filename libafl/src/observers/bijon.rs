@@ -11,10 +11,7 @@ use num_traits::PrimInt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolts::{
-        tuples::Named,
-        AsMutSlice, AsSlice, HasLen,
-    },
+    bolts::{tuples::Named, AsMutSlice, AsSlice, HasLen},
     observers::Observer,
     Error,
 };
@@ -66,18 +63,19 @@ where
 {
     #[inline]
     fn pre_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
-//        assert!(0 == BANANA_FEEDBACK.write().unwrap().clear());
-        BANANA_FEEDBACK
-            .write().unwrap()
-            .clear();
+        println!("?????????? PREx BIJON");
+        //        assert!(0 == BANANA_FEEDBACK.write().unwrap().clear());
+        BANANA_FEEDBACK.write().unwrap().clear();
 
         self.prev = 0;
         self.reset_map()
     }
     #[inline]
     fn post_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
+        println!("?????????? POSt BIJON");
         BANANA_FEEDBACK
-            .write().unwrap()
+            .write()
+            .unwrap()
             .drain(..)
             .for_each(|ref node| self.add_node(node));
         Ok(())
@@ -136,13 +134,14 @@ impl MapObserver for BijonObserver {
 
     fn hash(&self) -> u64 {
         hash_slice(
-            &self.map
+            &self
+                .map
                 .iter()
                 .enumerate()
                 .filter(|(_, x)| &0u8 != *x)
                 .flat_map(|(i, x)| [i, *x as usize])
-                .collect::<Vec<usize>>()
-            )
+                .collect::<Vec<usize>>(),
+        )
     }
 
     #[inline]
@@ -198,20 +197,21 @@ impl IBananaFeedback for BijonObserver {
     /// externall call from bananafzz
     #[must_use]
     fn add_node(&mut self, nodex: &[u8]) {
+        println!(".........!!!!!!> ADD NEW EDGGGG : {:?}", nodex);
         let prev = self.prev;
         let node = hash_slice(nodex) as usize;
         self.prev = node >> 1;
 
         if 0 == prev {
-            return
+            return;
         }
 
         let key = prev ^ node;
         if self.edges.contains_key(&key) {
             if 1 == nodex.len() {
-                return self.map[self.edges[&key]] = 1
+                return self.map[self.edges[&key]] = 1;
             }
-            return self.map[self.edges[&key]] += 1
+            return self.map[self.edges[&key]] += 1;
         }
 
         self.edges.insert(key, self.map.len());

@@ -11,7 +11,7 @@ use crate::{
     observers::ObserversTuple,
     stages::StagesTuple,
     start_timer,
-    state::{HasClientPerfMonitor, HasMetadata, HasCorpus, HasExecutions, HasSolutions},
+    state::{HasClientPerfMonitor, HasCorpus, HasExecutions, HasMetadata, HasSolutions},
     Error,
 };
 
@@ -325,7 +325,6 @@ where
         let mut res = ExecuteInputResult::None;
 
         if ExitKind::BflErrorRepro != *exit_kind {
-
             #[cfg(not(feature = "introspection"))]
             let is_solution = self
                 .objective_mut()
@@ -335,7 +334,6 @@ where
             let is_solution = self
                 .objective_mut()
                 .is_interesting_introspection(state, manager, &input, observers, exit_kind)?;
-
 
             if is_solution {
                 res = ExecuteInputResult::Solution;
@@ -354,7 +352,7 @@ where
                     res = ExecuteInputResult::Corpus;
                 }
             }
-        } else { 
+        } else {
             res = ExecuteInputResult::BflErrorRepro;
         }
 
@@ -372,13 +370,12 @@ where
                 let mut testcase = Testcase::with_executions(input.clone(), *state.executions());
                 self.feedback_mut().append_metadata(state, &mut testcase)?;
                 let idx = state.corpus_mut().add(testcase)?;
-//                self.scheduler_mut().on_add(state, idx)?;/*
+                //                self.scheduler_mut().on_add(state, idx)?;/*
                 if let Err(e) = self.scheduler_mut().on_add(state, idx) {
                     println!("\n\t\t>>>>> Adding Failed : {e:?}\n");
                     state.corpus_mut().remove(idx).unwrap();
-                    return Ok((ExecuteInputResult::None, None))
-                }// */
-
+                    return Ok((ExecuteInputResult::None, None));
+                } // */
                 if send_events {
                     // TODO set None for fast targets
                     let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {
@@ -489,9 +486,10 @@ where
         let exit_kind = self.execute_input(state, executor, manager, &input)?;
         if ExitKind::BflErrorRepro == exit_kind {
             return Err(Error::IllegalArgument(
-                    "POC provided could not be repro-ed".to_string()))
+                "POC provided could not be repro-ed".to_string(),
+            ));
         }
-        
+
         let observers = executor.observers();
         // Always consider this to be "interesting"
 
@@ -504,7 +502,7 @@ where
         let idx = state.corpus_mut().add(testcase)?;
         if let Err(_) = self.scheduler_mut().on_add(state, idx) {
             state.corpus_mut().remove(idx).unwrap();
-            return Ok(idx)
+            return Ok(idx);
         }
 
         let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {

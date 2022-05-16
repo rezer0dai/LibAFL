@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use crate::{
     bolts::rands::Rand,
     corpus::Corpus,
-    fuzzer::{Evaluator,ExecuteInputResult},
+    fuzzer::{Evaluator, ExecuteInputResult},
     inputs::Input,
     mark_feature_time,
     mutators::Mutator,
@@ -68,17 +68,19 @@ where
             mark_feature_time!(state, PerfFeature::Mutate);
 
             // Time is measured directly the `evaluate_input` function
-            let (exit_reason, corpus_idx_ex) = fuzzer.evaluate_input(state, executor, manager, input)?;
+            let (exit_reason, corpus_idx_ex) =
+                fuzzer.evaluate_input(state, executor, manager, input)?;
 
             start_timer!(state);
-            self.mutator_mut().post_exec(state, i as i32, corpus_idx_ex)?;
+            self.mutator_mut()
+                .post_exec(state, i as i32, corpus_idx_ex)?;
             mark_feature_time!(state, PerfFeature::MutatePostExec);
 
             if ExecuteInputResult::BflErrorRepro == exit_reason {
-                if 0 ==i {
-                    return Ok(())
+                if 0 == i {
+                    return Ok(());
                 }
-            } 
+            }
         }
         Ok(())
     }
