@@ -30,8 +30,8 @@ lazy_static! {
     static ref BANANA_FEEDBACK: RwLock<Vec<Vec<u8>>> = RwLock::new(vec![]);
 }
 
-#[no_mangle]
-fn banana_feedback<'a>() -> RwLockWriteGuard<'a, Vec<Vec<u8>>> {
+/// middle man
+pub fn banana_feedback<'a>() -> RwLockWriteGuard<'a, Vec<Vec<u8>>> {
     BANANA_FEEDBACK.write().unwrap()
 }
 
@@ -65,7 +65,7 @@ where
     fn pre_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
         println!("?????????? PREx BIJON");
         //        assert!(0 == BANANA_FEEDBACK.write().unwrap().clear());
-        BANANA_FEEDBACK.write().unwrap().clear();
+        banana_feedback().clear();
 
         self.prev = 0;
         self.reset_map()
@@ -73,9 +73,7 @@ where
     #[inline]
     fn post_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
         println!("?????????? POSt BIJON");
-        BANANA_FEEDBACK
-            .write()
-            .unwrap()
+        banana_feedback()
             .drain(..)
             .for_each(|ref node| self.add_node(node));
         Ok(())

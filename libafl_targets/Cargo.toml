@@ -32,5 +32,3 @@ libafl = { path = "../libafl", version = "0.7.1", default-features = false, feat
 rangemap = "0.1"
 serde = { version = "1.0", default-features = false, features = ["alloc"] } # serialization lib
 # serde-big-array = "0.3.2"
-
-soly = { path = "../../soly" }
